@@ -1,0 +1,189 @@
+import { ObjectId } from "mongodb";
+import { z } from "zod";
+import { cols } from "@/lib/collections";
+import { audit } from "@/lib/audit";
+import { badRequest, conflict, forbidden, isDuplicateKeyError, notFound } from "@/lib/errors";
+import { formatINR } from "@/lib/money";
+import { todayIn } from "@/lib/dates";
+import type { OrgContext } from "@/lib/auth";
+import type { UpadPaymentClaimDoc } from "@/types/models";
+import { dateOnly, idempotencyKey, money, optText } from "@/validators/common";
+import { listFundLoans, receiveFundLoanPayment } from "./fund-loan.service";
+import { lastOfMonth, monthOf } from "./monthly.service";
+import { notifyMember, notifyRoles } from "./notification.service";
+
+/**
+ * "I have paid" — what a member can report paying, and the upad side of it.
+ * Hapta / other payments go through the existing pending-payment flow (payment.service);
+ * upad interest and upad returned are "claims" here that an admin verifies (→ a normal upad
+ * payment with receipt and interest shares) or rejects.
+ */
+
+function memberOf(ctx: OrgContext) {
+  if (!ctx.membership.memberId) throw forbidden("Your login is not linked to a member record yet — ask the admin");
+  return ctx.membership.memberId;
+}
+
+/** What the member owes right now, to pre-fill the "I have paid" form. */
+export async function myPaymentOptions(ctx: OrgContext) {
+  const memberId = memberOf(ctx);
+  const c = await cols();
+  const today = todayIn(ctx.org.settings.timezone);
+  const monthEnd = lastOfMonth(monthOf(today));
+  const [due] = await c.installments
+    .aggregate<{ due: number; months: number }>([
+      { $match: { organizationId: ctx.orgId, memberId, state: "active", dueDate: { $lte: monthEnd } } },
+      { $project: { owed: { $subtract: [{ $add: ["$amountPaise", "$penaltyPaise"] }, { $add: ["$paidPaise", "$penaltyPaidPaise"] }] } } },
+      { $match: { owed: { $gt: 0 } } },
+      { $group: { _id: null, due: { $sum: "$owed" }, months: { $sum: 1 } } },
+    ])
+    .toArray();
+  const [pendingHapta] = await c.payments
+    .aggregate<{ t: number }>([{ $match: { organizationId: ctx.orgId, memberId, status: "pending" } }, { $group: { _id: null, t: { $sum: "$amountPaise" } } }])
+    .toArray();
+  const loans = await listFundLoans(ctx, { status: "active" }, memberId);
+  return {
+    hapta: { duePaise: due?.due ?? 0, months: due?.months ?? 0, pendingPaise: pendingHapta?.t ?? 0 },
+    upads: loans.items.map((l) => ({ _id: l._id, number: l.number, interestDuePaise: l.interestDuePaise, outstandingPaise: l.outstandingPaise, monthlyRate: l.monthlyRate, unpaidMonths: l.unpaidMonths })),
+    methods: ctx.org.settings.paymentMethods,
+  };
+}
+
+/* ------------------------------------------------------------------ upad payment claims */
+
+export const UpadClaimSchema = z
+  .object({
+    loanId: z.string(),
+    interestAmount: money({ allowZero: true }).default(0),
+    principalAmount: money({ allowZero: true }).default(0),
+    date: dateOnly,
+    method: z.string().min(2).max(30),
+    reference: optText(100),
+    notes: optText(500),
+    idempotencyKey,
+  })
+  .refine((v) => v.interestAmount > 0 || v.principalAmount > 0, { message: "Enter the interest and/or upad amount you paid", path: ["interestAmount"] });
+
+export async function submitUpadClaim(ctx: OrgContext, input: z.infer<typeof UpadClaimSchema>) {
+  const memberId = memberOf(ctx);
+  if (!ctx.org.settings.paymentMethods.includes(input.method)) throw badRequest("Choose a valid payment method");
+  const c = await cols();
+  const prior = await c.upadPaymentClaims.findOne({ organizationId: ctx.orgId, idempotencyKey: input.idempotencyKey });
+  if (prior) return { claim: prior, duplicate: true };
+  if (!ObjectId.isValid(input.loanId)) throw notFound("Upad");
+  const today = todayIn(ctx.org.settings.timezone);
+  if (input.date > today) throw badRequest("The payment date can't be in the future");
+  const { items } = await listFundLoans(ctx, { status: "active" }, memberId);
+  const loan = items.find((l) => l._id.toHexString() === input.loanId);
+  if (!loan) throw notFound("Upad");
+  // what's already reported but not yet verified counts against what is due
+  const open = await c.upadPaymentClaims.find({ organizationId: ctx.orgId, loanId: loan._id, status: "pending" }).toArray();
+  const openInterest = open.reduce((s, x) => s + x.interestPaise, 0);
+  const openPrincipal = open.reduce((s, x) => s + x.principalPaise, 0);
+  if (input.interestAmount > loan.interestDuePaise - openInterest) throw badRequest(`Interest due on ${loan.number} is ${formatINR(Math.max(0, loan.interestDuePaise - openInterest))}${openInterest ? " (after payments waiting for verification)" : ""}`);
+  if (input.principalAmount > loan.outstandingPaise - openPrincipal) throw badRequest(`Only ${formatINR(Math.max(0, loan.outstandingPaise - openPrincipal))} of ${loan.number} is outstanding`);
+  const now = new Date();
+  const doc: UpadPaymentClaimDoc = {
+    _id: new ObjectId(),
+    organizationId: ctx.orgId,
+    memberId,
+    loanId: loan._id,
+    interestPaise: input.interestAmount,
+    principalPaise: input.principalAmount,
+    date: input.date,
+    method: input.method,
+    reference: input.reference,
+    notes: input.notes,
+    status: "pending",
+    paymentId: null,
+    decidedBy: null,
+    decidedAt: null,
+    submittedBy: ctx.user._id,
+    idempotencyKey: input.idempotencyKey,
+    createdAt: now,
+    updatedAt: now,
+  };
+  try {
+    await c.upadPaymentClaims.insertOne(doc);
+  } catch (e) {
+    if (isDuplicateKeyError(e)) {
+      const again = await c.upadPaymentClaims.findOne({ organizationId: ctx.orgId, idempotencyKey: input.idempotencyKey });
+      if (again) return { claim: again, duplicate: true };
+    }
+    throw e;
+  }
+  const member = await c.members.findOne({ _id: memberId }, { projection: { name: 1 } });
+  await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "upadClaim.submit", entityType: "upadPaymentClaim", entityId: doc._id, after: { loanId: loan._id, interestPaise: doc.interestPaise, principalPaise: doc.principalPaise } });
+  await notifyRoles(ctx.orgId, ["admin", "manager"], {
+    type: "upadClaim.new",
+    title: "Upad payment to verify",
+    body: `${member?.name ?? "A member"} reported paying ${[doc.interestPaise ? `${formatINR(doc.interestPaise)} interest` : "", doc.principalPaise ? `${formatINR(doc.principalPaise)} upad returned` : ""].filter(Boolean).join(" + ")} on ${loan.number} (${doc.method}${doc.reference ? ` ref ${doc.reference}` : ""}).`,
+    link: `/org/${ctx.orgId}/fund-loans`,
+    dedupeKey: `upadclaim:${doc._id}`,
+  });
+  return { claim: doc, duplicate: false };
+}
+
+export async function myUpadClaims(ctx: OrgContext) {
+  const memberId = memberOf(ctx);
+  const c = await cols();
+  const items = await c.upadPaymentClaims.find({ organizationId: ctx.orgId, memberId }).sort({ createdAt: -1 }).limit(50).toArray();
+  const loans = await c.fundLoans.find({ _id: { $in: items.map((i) => i.loanId) } }, { projection: { number: 1 } }).toArray();
+  return items.map((i) => ({ ...i, loanNumber: loans.find((l) => l._id.equals(i.loanId))?.number ?? "" }));
+}
+
+export async function listUpadClaims(ctx: OrgContext, status: "pending" | "all" = "pending") {
+  const c = await cols();
+  const filter: Record<string, unknown> = { organizationId: ctx.orgId };
+  if (status !== "all") filter.status = status;
+  const items = await c.upadPaymentClaims.find(filter).sort({ createdAt: -1 }).limit(200).toArray();
+  const [members, loans] = await Promise.all([
+    c.members.find({ _id: { $in: items.map((i) => i.memberId) } }, { projection: { name: 1, membershipNumber: 1 } }).toArray(),
+    c.fundLoans.find({ _id: { $in: items.map((i) => i.loanId) } }, { projection: { number: 1, outstandingPaise: 1 } }).toArray(),
+  ]);
+  return items.map((i) => ({ ...i, member: members.find((m) => m._id.equals(i.memberId)) ?? null, loanNumber: loans.find((l) => l._id.equals(i.loanId))?.number ?? "" }));
+}
+
+export const VerifyClaimSchema = z.object({ accountId: z.string().optional() });
+
+/** Verify → records the upad payment exactly as "Receive" would (receipt, interest shared among members). */
+export async function verifyUpadClaim(ctx: OrgContext, id: ObjectId, input: z.infer<typeof VerifyClaimSchema>) {
+  const c = await cols();
+  const claim = await c.upadPaymentClaims.findOne({ _id: id, organizationId: ctx.orgId });
+  if (!claim) throw notFound("Payment");
+  if (claim.status !== "pending") throw conflict(`This payment is already ${claim.status}`);
+  const claimed = await c.upadPaymentClaims.updateOne({ _id: id, status: "pending" }, { $set: { status: "verified", decidedBy: ctx.user._id, decidedAt: new Date(), updatedAt: new Date() } });
+  if (claimed.modifiedCount !== 1) throw conflict("This payment was just changed — refresh and try again");
+  try {
+    const { payment } = await receiveFundLoanPayment(ctx, claim.loanId, {
+      interestAmount: claim.interestPaise,
+      principalAmount: claim.principalPaise,
+      date: claim.date,
+      note: [`Reported by member`, claim.notes].filter(Boolean).join(": "),
+      accountId: input.accountId,
+      method: claim.method,
+      reference: claim.reference,
+      idempotencyKey: `upadclaim:${id.toHexString()}`,
+    });
+    await c.upadPaymentClaims.updateOne({ _id: id }, { $set: { paymentId: payment._id, updatedAt: new Date() } });
+    await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "upadClaim.verify", entityType: "upadPaymentClaim", entityId: id, after: { paymentId: payment._id } });
+    await notifyMember(ctx.orgId, claim.memberId, { type: "upadClaim.verified", title: "Upad payment verified", body: `Your payment of ${formatINR(claim.interestPaise + claim.principalPaise)} was verified. Receipt issued.`, link: `/org/${ctx.orgId}/receipts/${payment.receiptId}`, dedupeKey: `upadclaim-ok:${id}` });
+    return { ok: true, paymentId: payment._id, receiptId: payment.receiptId };
+  } catch (e) {
+    await c.upadPaymentClaims.updateOne({ _id: id, status: "verified", paymentId: null }, { $set: { status: "pending", decidedBy: null, decidedAt: null, updatedAt: new Date() } });
+    throw e;
+  }
+}
+
+export async function rejectUpadClaim(ctx: OrgContext, id: ObjectId, reasonText: string) {
+  const c = await cols();
+  const claim = await c.upadPaymentClaims.findOneAndUpdate(
+    { _id: id, organizationId: ctx.orgId, status: "pending" },
+    { $set: { status: "rejected", rejectedReason: reasonText, decidedBy: ctx.user._id, decidedAt: new Date(), updatedAt: new Date() } },
+    { returnDocument: "after" },
+  );
+  if (!claim) throw conflict("Only payments waiting for verification can be rejected");
+  await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "upadClaim.reject", entityType: "upadPaymentClaim", entityId: id, reason: reasonText });
+  await notifyMember(ctx.orgId, claim.memberId, { type: "upadClaim.rejected", title: "Upad payment not verified", body: `Your payment of ${formatINR(claim.interestPaise + claim.principalPaise)} could not be verified: ${reasonText}`, link: `/org/${ctx.orgId}/my?tab=upad`, dedupeKey: `upadclaim-rej:${id}` });
+  return { ok: true };
+}
