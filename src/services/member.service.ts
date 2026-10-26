@@ -29,6 +29,8 @@ export const MemberInputSchema = z.object({
   enrollInMonthlyHapta: z.boolean().optional(),
   /** First hapta month (YYYY-MM); default: current month */
   haptaStartMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Use YYYY-MM").optional(),
+  /** On create with an email: email them an invitation to sign in to the Mandal (default true) */
+  inviteToApp: z.boolean().optional(),
 });
 
 type MemberInput = Partial<z.infer<typeof MemberInputSchema>> & { name: string };

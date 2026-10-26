@@ -8,7 +8,8 @@ export interface EmailMessage {
 }
 
 export interface EmailProvider {
-  send(msg: EmailMessage): Promise<void>;
+  /** true when the message was handed to a real email service */
+  send(msg: EmailMessage): Promise<boolean>;
 }
 
 /** Development / unconfigured provider: logs instead of sending. */
@@ -17,6 +18,7 @@ class LogEmailProvider implements EmailProvider {
     if (process.env.NODE_ENV !== "test") {
       console.info(`[email] to=${msg.to} subject="${msg.subject}"\n${msg.text}`);
     }
+    return false;
   }
 }
 
@@ -30,6 +32,7 @@ class ResendEmailProvider implements EmailProvider {
       body: JSON.stringify({ from: this.from, to: [msg.to], subject: msg.subject, text: msg.text, html: msg.html }),
     });
     if (!res.ok) console.error("Email send failed", res.status);
+    return res.ok;
   }
 }
 
@@ -43,14 +46,21 @@ export function emailProvider(): EmailProvider {
   return provider;
 }
 
-export async function sendEmail(msg: EmailMessage) {
+/** Sends (or logs) an email. Resolves to true when it was actually delivered to the email service. */
+export async function sendEmail(msg: EmailMessage): Promise<boolean> {
   if (process.env.NODE_ENV === "test") {
     sentEmails.push(msg);
-    return;
+    return true;
   }
   try {
-    await emailProvider().send(msg);
+    return await emailProvider().send(msg);
   } catch (e) {
     console.error("Email provider error", e);
+    return false;
   }
+}
+
+/** Is a real email service configured? */
+export function emailConfigured() {
+  return process.env.NODE_ENV === "test" || !!env().RESEND_API_KEY;
 }

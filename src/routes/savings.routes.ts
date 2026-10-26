@@ -26,6 +26,7 @@ export function registerSavingsRoutes(r: Router) {
     return orgService.searchOrganizations(auth, q);
   });
   r.get("/invitations/mine", async (req) => orgService.myInvitations(await req.auth()));
+  r.get("/invitations/preview", async (req) => orgService.previewInvitation(await req.auth(), req.query.get("token") ?? ""));
   r.post("/invitations/:id/accept", async (req) => orgService.acceptInvitationById(await req.auth(), parseObjectId(req.params.id, "Invitation")));
   r.post("/invitations/:id/decline", async (req) => orgService.declineInvitation(await req.auth(), parseObjectId(req.params.id, "Invitation")));
   r.get("/orgs/:orgId/invitations", async (req) => orgService.listInvitations(await req.org("memberships.manage")));

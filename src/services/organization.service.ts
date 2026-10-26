@@ -19,7 +19,7 @@ import { todayIn } from "@/lib/dates";
 import { createMember } from "./member.service";
 import { rateLimit } from "@/lib/rate-limit";
 import { notify } from "./notification.service";
-import { sendEmail } from "./email.service";
+import { emailConfigured, sendEmail } from "./email.service";
 
 export { DEFAULT_EXPENSE_CATEGORIES, defaultSettings } from "@/lib/org-defaults";
 
@@ -524,29 +524,40 @@ export const InviteSchema = z.object({
   memberId: z.string().optional(),
 });
 
+const esc = (v: string) => v.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]!);
+
+/**
+ * Invite someone by email to sign in to this Mandal, optionally linked to their member record.
+ * - New to MandalHisab: the link opens registration with the email filled in, then joins the Mandal.
+ * - Already registered: the link (and an in-app banner) lets them join with one tap.
+ * Any earlier pending invitation for the same email is replaced.
+ */
 export async function createInvitation(ctx: OrgContext, input: z.infer<typeof InviteSchema>) {
   await rateLimit(`invite:${ctx.orgId}`, 100, 86400);
   const c = await cols();
-  let memberId: ObjectId | null = null;
+  let member: { _id: ObjectId; name: string; userId?: ObjectId | null } | null = null;
   if (input.memberId) {
-    const mem = await c.members.findOne({ _id: new ObjectId(input.memberId), organizationId: ctx.orgId });
-    if (!mem) throw notFound("Member");
-    memberId = mem._id;
+    if (!ObjectId.isValid(input.memberId)) throw notFound("Member");
+    member = await c.members.findOne({ _id: new ObjectId(input.memberId), organizationId: ctx.orgId }, { projection: { name: 1, userId: 1 } });
+    if (!member) throw notFound("Member");
+    if (member.userId) throw conflict(`${member.name} already has an app login linked`);
   }
-  const invitee = await c.users.findOne({ email: input.email }, { projection: { _id: 1 } });
+  const invitee = await c.users.findOne({ email: input.email }, { projection: { _id: 1, name: 1 } });
   if (invitee) {
     const ms = await c.organizationMemberships.findOne({ organizationId: ctx.orgId, userId: invitee._id, status: "active" });
-    if (ms) throw conflict("This person is already a member of this Mandal");
+    // already in the Mandal: only useful when it links them to their member record
+    if (ms && (!member || ms.memberId)) throw conflict("This person is already a member of this Mandal");
   }
   const token = randomToken();
   const now = new Date();
-  await c.invitations.updateMany({ organizationId: ctx.orgId, email: input.email, status: "pending" }, { $set: { status: "revoked" } });
+  await c.invitations.updateMany({ organizationId: ctx.orgId, email: input.email, status: "pending" }, { $set: { status: "revoked", updatedAt: now } });
+  const invitationId = new ObjectId();
   await c.invitations.insertOne({
-    _id: new ObjectId(),
+    _id: invitationId,
     organizationId: ctx.orgId,
     email: input.email,
     role: input.role,
-    memberId,
+    memberId: member?._id ?? null,
     tokenHash: hashToken(token),
     status: "pending",
     invitedBy: ctx.user._id,
@@ -554,14 +565,51 @@ export async function createInvitation(ctx: OrgContext, input: z.infer<typeof In
     createdAt: now,
     updatedAt: now,
   });
-  const link = `${env().FRONTEND_URL}/invite?token=${encodeURIComponent(token)}`;
-  await sendEmail({
+  const base = env().FRONTEND_URL;
+  const acceptPath = `/invite?token=${encodeURIComponent(token)}`;
+  // new people register first (email pre-filled), then land on the invitation
+  const link = invitee ? `${base}${acceptPath}` : `${base}/register?email=${encodeURIComponent(input.email)}&next=${encodeURIComponent(acceptPath)}`;
+  const greeting = invitee?.name ? `Namaste ${invitee.name.split(" ")[0]},` : member ? `Namaste ${member.name.split(" ")[0]},` : "Namaste,";
+  const steps = invitee
+    ? `Sign in with ${input.email} and tap "Join the Mandal".`
+    : `Create your MandalHisab account with this email (${input.email}) and set your own password — you'll join the Mandal straight away.`;
+  const emailed = await sendEmail({
     to: input.email,
-    subject: `You're invited to ${ctx.org.name} on MandalHisab`,
-    text: `${ctx.user.name} invited you to join ${ctx.org.name} as ${input.role}.\n\nAccept: ${link}\n\nThis invitation expires in 7 days.`,
+    subject: `${ctx.user.name} invited you to ${ctx.org.name} on MandalHisab`,
+    text: `${greeting}\n\n${ctx.user.name} invited you to join ${ctx.org.name} on MandalHisab${member ? " to see your savings, hapta and upad" : ""}.\n\n${steps}\n\nOpen: ${link}\n\nThis invitation expires in 7 days.`,
+    html: `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#1f1d2e">
+<p style="font-size:20px;font-weight:700;margin:0 0 16px;color:#4f46e5">MandalHisab</p>
+<p>${esc(greeting)}</p>
+<p><b>${esc(ctx.user.name)}</b> invited you to join <b>${esc(ctx.org.name)}</b>${member ? " to see your savings, hapta and upad" : ""}.</p>
+<p>${esc(steps)}</p>
+<p style="margin:24px 0"><a href="${esc(link)}" style="background:#4f46e5;color:#fff;text-decoration:none;padding:12px 20px;border-radius:12px;font-weight:600;display:inline-block">${invitee ? "Join the Mandal" : "Create account &amp; join"}</a></p>
+<p style="font-size:13px;color:#6b6880">This invitation expires in 7 days. If the button doesn't work, open: ${esc(link)}</p>
+</div>`,
   });
-  await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "invitation.create", entityType: "invitation", after: { email: input.email, role: input.role } });
-  return { ok: true, inviteLink: link, existingUser: !!invitee };
+  await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "invitation.create", entityType: "invitation", entityId: invitationId, after: { email: input.email, role: input.role, memberId: member?._id ?? null } });
+  return { ok: true, invitationId, inviteLink: link, existingUser: !!invitee, emailed, emailConfigured: emailConfigured() };
+}
+
+/** What an invitation is for — shown on the invite page before joining. */
+export async function previewInvitation(auth: AuthContext, token: string) {
+  const c = await cols();
+  const inv = await c.invitations.findOne({ tokenHash: hashToken(token) });
+  if (!inv || inv.status !== "pending" || inv.expiresAt <= new Date()) throw badRequest("This invitation is invalid, already used or has expired. Ask the Mandal admin for a new one.");
+  const [org, inviter, member] = await Promise.all([
+    c.organizations.findOne({ _id: inv.organizationId }, { projection: { name: 1, city: 1, status: 1 } }),
+    c.users.findOne({ _id: inv.invitedBy }, { projection: { name: 1 } }),
+    inv.memberId ? c.members.findOne({ _id: inv.memberId }, { projection: { name: 1, membershipNumber: 1 } }) : Promise.resolve(null),
+  ]);
+  return {
+    organization: org ? { _id: org._id, name: org.name, city: org.city ?? null } : null,
+    invitedByName: inviter?.name ?? null,
+    role: inv.role,
+    email: inv.email,
+    member: member ? { name: member.name, membershipNumber: member.membershipNumber } : null,
+    emailMatches: inv.email === auth.user.email,
+    signedInAs: auth.user.email,
+    expiresAt: inv.expiresAt,
+  };
 }
 
 export async function acceptInvitation(auth: AuthContext, token: string) {
@@ -615,7 +663,11 @@ async function acceptInvitationDoc(auth: AuthContext, inv: import("@/types/model
     const claimed = await c.invitations.updateOne({ _id: inv._id, status: "pending" }, { $set: { status: "accepted", updatedAt: now } }, { session });
     if (claimed.modifiedCount !== 1) throw conflict("Invitation already used");
     if (existing?.status === "active") {
-      // Already a member: never change an existing role through an invitation.
+      // Already a member: never change an existing role through an invitation — only link the member record if missing.
+      if (inv.memberId && !existing.memberId) {
+        await c.organizationMemberships.updateOne({ _id: existing._id }, { $set: { memberId: inv.memberId, updatedAt: now } }, { session });
+        await c.members.updateOne({ _id: inv.memberId, organizationId: inv.organizationId, userId: null }, { $set: { userId: auth.user._id } }, { session });
+      }
     } else {
       await c.organizationMemberships.updateOne(
         { organizationId: inv.organizationId, userId: auth.user._id },

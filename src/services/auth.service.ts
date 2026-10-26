@@ -237,7 +237,18 @@ export async function deactivateUser(actor: AuthContext, userId: ObjectId, reaso
 
 export async function me(auth: AuthContext) {
   const c = await cols();
-  const memberships = await c.organizationMemberships
+  // invitations waiting for this person (shown as a banner inside the app)
+  const invitationsP = c.invitations
+    .aggregate<{ _id: ObjectId; role: string; org: { _id: ObjectId; name: string; status: string }[]; inviter: { name: string }[] }>([
+      { $match: { email: auth.user.email, status: "pending", expiresAt: { $gt: new Date() } } },
+      { $sort: { createdAt: -1 } },
+      { $limit: 5 },
+      { $lookup: { from: "organizations", localField: "organizationId", foreignField: "_id", as: "org", pipeline: [{ $project: { name: 1, status: 1 } }] } },
+      { $lookup: { from: "users", localField: "invitedBy", foreignField: "_id", as: "inviter", pipeline: [{ $project: { name: 1 } }] } },
+      { $project: { role: 1, org: 1, inviter: 1 } },
+    ])
+    .toArray();
+  const membershipsP = c.organizationMemberships
     .aggregate<{
       _id: ObjectId;
       role: string;
@@ -263,6 +274,7 @@ export async function me(auth: AuthContext) {
       { $sort: { "org.name": 1 } },
     ])
     .toArray();
+  const [memberships, invitations] = await Promise.all([membershipsP, invitationsP]);
   return {
     user: publicUser(auth.user),
     organizations: memberships.map((m) => ({
@@ -276,5 +288,8 @@ export async function me(auth: AuthContext) {
       status: m.org.status,
       logoUrl: m.org.logoUrl ?? null,
     })),
+    invitations: invitations
+      .filter((i) => i.org[0] && i.org[0].status !== "suspended" && i.org[0].status !== "archived")
+      .map((i) => ({ id: i._id, role: i.role, organization: { _id: i.org[0]._id, name: i.org[0].name }, invitedByName: i.inviter[0]?.name ?? null })),
   };
 }

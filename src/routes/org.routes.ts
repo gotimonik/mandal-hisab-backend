@@ -42,9 +42,21 @@ export function registerOrgRoutes(r: Router) {
     const ctx = await req.org("members.view");
     return memberService.listMembers(ctx, req.queryAs(memberService.MemberListQuery));
   });
-  r.post("/orgs/:orgId/members", async (req) =>
-    memberService.createMember(await req.org("members.manage", W), await req.body(memberService.MemberInputSchema)),
-  );
+  r.post("/orgs/:orgId/members", async (req) => {
+    const ctx = await req.org("members.manage", W);
+    const input = await req.body(memberService.MemberInputSchema);
+    const member = await memberService.createMember(ctx, input);
+    // a member with an email gets an invitation to sign in (linked to this member record)
+    let invitation: Awaited<ReturnType<typeof orgService.createInvitation>> | { ok: false; error: string } | null = null;
+    if (member.email && input.inviteToApp !== false && ctx.permissions.has("memberships.manage")) {
+      try {
+        invitation = await orgService.createInvitation(ctx, { email: member.email, role: "member", memberId: member._id.toHexString() });
+      } catch (e) {
+        invitation = { ok: false, error: e instanceof Error ? e.message : "Could not send the invitation" };
+      }
+    }
+    return { ...member, invitation };
+  });
   r.post("/orgs/:orgId/members/import", async (req) => {
     const ctx = await req.org("members.manage", W);
     const b = await req.body(z.object({ csv: z.string().min(1).max(2_000_000), dryRun: z.boolean().default(true) }));
