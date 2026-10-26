@@ -111,6 +111,19 @@ export interface OrganizationSettings {
   /** Loans from the Mandal fund: interest-only, charged monthly on the outstanding amount. */
   fundLoans: { defaultMonthlyRate: string; dueDay: number; allowMemberRequests: boolean };
   membership: { discoverable: boolean; allowJoinRequests: boolean; autoCreateMember: boolean };
+  /** Last month the Mandal runs (YYYY-MM). No hapta is created after it. Absent/null = no end. */
+  endMonth?: string | null;
+  /** Closing & settlement progress (see settlement.service). */
+  settlement?: SettlementState | null;
+}
+
+export interface SettlementState {
+  startedAt: Date;
+  startedBy: Id;
+  /** each "share out the Mandal's own money" step */
+  distributions: { at: Date; totalPaise: number; transactionId: Id | null; perShare: number; shares: number }[];
+  payouts: { memberId: Id; at: Date; netPaise: number; grossPaise: number; upadSettledPaise: number; withdrawalId: Id | null }[];
+  closedAt?: Date | null;
 }
 
 export interface MonthlyHaptaSettings {
@@ -225,7 +238,7 @@ export interface MemberLedgerEntryDoc {
   description: string;
   /** e.g. "2026-10" for hapta/interest */
   period?: string;
-  sourceType: "payment" | "interestRun" | "withdrawal" | "opening" | "adjustment" | "fundLoanPayment";
+  sourceType: "payment" | "interestRun" | "withdrawal" | "opening" | "adjustment" | "fundLoanPayment" | "settlement";
   sourceId: Id;
   transactionId?: Id | null;
   /** Unique per org when set: prevents double interest / double opening balance / double posting */
@@ -533,7 +546,8 @@ export type TransactionType =
   | "member_opening"
   | "member_adjustment"
   | "fund_loan_given"
-  | "fund_loan_payment";
+  | "fund_loan_payment"
+  | "closing_distribution";
 
 export interface FinancialTransactionDoc {
   _id: Id;
@@ -545,7 +559,7 @@ export interface FinancialTransactionDoc {
   description: string;
   memberId?: Id | null;
   eventName?: string;
-  sourceType?: "payment" | "donation" | "expense" | "loan" | "loanRepayment" | "transfer" | "account" | "adjustment" | "interestRun" | "withdrawal" | "memberOpening" | "memberAdjustment" | "cashEntry" | "fundLoan" | "fundLoanPayment";
+  sourceType?: "payment" | "donation" | "expense" | "loan" | "loanRepayment" | "transfer" | "account" | "adjustment" | "interestRun" | "withdrawal" | "memberOpening" | "memberAdjustment" | "cashEntry" | "fundLoan" | "fundLoanPayment" | "settlement";
   sourceId?: Id;
   reversalOf?: Id | null;
   reversedBy?: Id | null;

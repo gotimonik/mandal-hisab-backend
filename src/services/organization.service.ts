@@ -49,6 +49,8 @@ export const CreateOrgSchema = z.object({
   monthlyHaptaAmount: money().optional(),
   haptaStartMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Use YYYY-MM").optional(),
   haptaDueDay: z.coerce.number().int().min(1).max(28).default(10),
+  /** Last month the Mandal runs (YYYY-MM). Optional — no end date by default. */
+  endMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Use YYYY-MM").optional(),
   /** Also add the creator as a contributing member */
   creatorIsMember: z.boolean().default(true),
 });
@@ -160,7 +162,7 @@ export async function createOrganization(auth: AuthContext, input: z.infer<typeo
   const base = slugify(input.name);
 
   for (let attempt = 0; attempt < 5; attempt++) {
-    const { financialYearStartMonth: _fy, monthlyHaptaAmount: _a, haptaStartMonth: _m, haptaDueDay: _d, creatorIsMember: _c, ...profile } = input;
+    const { financialYearStartMonth: _fy, monthlyHaptaAmount: _a, haptaStartMonth: _m, haptaDueDay: _d, creatorIsMember: _c, endMonth: _end, ...profile } = input;
     const org: OrganizationDoc = {
       _id: new ObjectId(),
       ...profile,
@@ -232,6 +234,11 @@ async function afterCreate(auth: AuthContext, org: OrganizationDoc, input: z.inf
   }
   if (input.monthlyHaptaAmount) {
     await setupMonthlyHapta(ctx, { amount: input.monthlyHaptaAmount, startMonth: start, dueDay: input.haptaDueDay, enrollAllActive: true });
+  }
+  if (input.endMonth) {
+    if (input.endMonth < start) throw badRequest("The Mandal can't end before its hapta starts");
+    const { setEndMonth } = await import("./settlement.service");
+    await setEndMonth(await requireOrgAccess(auth, org._id.toHexString(), "org.view"), { endMonth: input.endMonth });
   }
 }
 

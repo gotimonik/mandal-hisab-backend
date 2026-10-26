@@ -1,3 +1,4 @@
+import * as settlement from "@/services/settlement.service";
 import { z } from "zod";
 import { csvResponse, type Router } from "@/lib/http";
 import { parseObjectId } from "@/lib/auth";
@@ -136,6 +137,13 @@ export function registerSavingsRoutes(r: Router) {
   r.get("/orgs/:orgId/me/upad-payments", async (req) => mp.myUpadClaims(await req.org("self.view")));
   r.post("/orgs/:orgId/me/upad-payments", async (req) => mp.submitUpadClaim(await req.org("self.submitPayment", W), await req.body(mp.UpadClaimSchema)));
   r.get("/orgs/:orgId/upad-payments", async (req) => mp.listUpadClaims(await req.org("payments.view"), req.query.get("status") === "all" ? "all" : "pending"));
+  /* ---------------- how long the Mandal runs, closing & settlement (admin) */
+  r.patch("/orgs/:orgId/end-month", async (req) => settlement.setEndMonth(await req.org("org.settings.manage", W), await req.body(settlement.EndMonthSchema)));
+  r.get("/orgs/:orgId/settlement", async (req) => settlement.settlementPreview(await req.org("org.settings.manage")));
+  r.post("/orgs/:orgId/settlement/waive-hapta", async (req) => settlement.waiveUnpaidHapta(await req.org("org.settings.manage", W), await req.body(settlement.WaiveSchema)));
+  r.post("/orgs/:orgId/settlement/start", async (req) => settlement.startSettlement(await req.org("org.settings.manage", W), await req.body(settlement.StartSchema)));
+  r.post("/orgs/:orgId/settlement/payouts/:memberId", async (req) => settlement.payoutMember(await req.org("org.settings.manage", W), parseObjectId(req.params.memberId, "Member"), await req.body(settlement.PayoutSchema)));
+  r.post("/orgs/:orgId/settlement/close", async (req) => settlement.closeMandal(await req.org("org.settings.manage", W), await req.body(settlement.CloseSchema)));
   r.post("/orgs/:orgId/upad-payments/:id/settle", async (req) => mp.settleUpadClaim(await req.org("payments.verify", W), parseObjectId(req.params.id, "Payment")));
   r.post("/orgs/:orgId/upad-payments/:id/verify", async (req) => mp.verifyUpadClaim(await req.org("payments.verify", W), parseObjectId(req.params.id, "Payment"), await req.body(mp.VerifyClaimSchema)));
   r.post("/orgs/:orgId/upad-payments/:id/reject", async (req) => {
