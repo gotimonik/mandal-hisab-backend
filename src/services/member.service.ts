@@ -114,7 +114,8 @@ export async function updateMember(ctx: OrgContext, id: ObjectId, rawInput: Part
     throw e;
   }
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "member.update", entityType: "member", entityId: id, before: input && pick(before, Object.keys(input)), after: input });
-  if (input.haptaShares !== undefined && input.haptaShares !== (before.haptaShares ?? 1)) {
+  // a changed share count — or an explicit "apply from" month for the current one — re-prices the months
+  if (input.haptaShares !== undefined && (input.haptaShares !== (before.haptaShares ?? 1) || sharesFromMonth)) {
     const { setHaptaShares } = await import("./monthly.service");
     const r = await setHaptaShares(ctx, id, input.haptaShares, sharesFromMonth);
     return { ...next, sharesInstallmentsUpdated: r.installmentsUpdated };

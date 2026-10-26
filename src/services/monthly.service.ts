@@ -115,25 +115,30 @@ export async function enrollInMonthlyHapta(ctx: OrgContext, memberIds: ObjectId[
 }
 
 /**
- * Change how many haptas a member pays each month. Applies to their unpaid monthly hapta from
- * `fromMonth` (default: this month) onwards; paid or part-paid months keep their amount.
+ * Change how many haptas a member pays each month, from `fromMonth` (default: this month) onwards.
+ * Months in that range are re-priced to hapta × shares even if they were already (part) paid — a
+ * month paid at ₹500 becomes ₹1,500 with ₹1,000 still due. An amount never drops below what was
+ * already paid. Earlier months are never changed.
  */
 export async function setHaptaShares(ctx: OrgContext, memberId: ObjectId, shares: number, fromMonth?: string) {
   const c = await cols();
   const today = todayIn(ctx.org.settings.timezone);
-  const from = firstOfMonth(fromMonth ?? monthOf(today));
+  const current = monthOf(today);
+  if (fromMonth && fromMonth < current) throw badRequest("Shares can only change from this month onwards — earlier months stay as they are");
+  const from = firstOfMonth(fromMonth ?? current);
   const s = await primaryScheme(ctx.orgId);
   let updated = 0;
   if (s) {
     await c.memberSchemeEnrollments.updateOne({ organizationId: ctx.orgId, schemeId: s._id, memberId }, { $set: { shares, updatedAt: new Date() } });
     const now = new Date();
     const r = await c.installments.updateMany(
-      { organizationId: ctx.orgId, schemeId: s._id, memberId, dueDate: { $gte: from }, paidPaise: 0, state: "active", amountSource: { $in: ["scheme", "revision", "override"] } },
+      { organizationId: ctx.orgId, schemeId: s._id, memberId, dueDate: { $gte: from }, state: "active", amountSource: { $in: ["scheme", "revision", "override"] }, shares: shares === 1 ? { $exists: true, $ne: 1 } : { $ne: shares } },
       [
         {
           $set: {
             // amountPaise already includes the old shares: back to one hapta, then × the new shares
-            amountPaise: { $multiply: [{ $round: [{ $divide: ["$amountPaise", { $ifNull: ["$shares", 1] }] }, 0] }, shares] },
+            // (never below what has already been paid)
+            amountPaise: { $max: [{ $multiply: [{ $round: [{ $divide: ["$amountPaise", { $ifNull: ["$shares", 1] }] }, 0] }, shares] }, "$paidPaise"] },
             history: { $concatArrays: ["$history", [{ at: now, by: ctx.user._id, action: "shares_changed", from: { $ifNull: ["$shares", 1] }, to: shares, reason: `Hapta shares set to ${shares}` }]] },
             shares,
             updatedAt: now,

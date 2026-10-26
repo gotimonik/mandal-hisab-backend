@@ -78,6 +78,38 @@ describe("hapta shares", () => {
     expect(d.totals.activeShares).toBe(4);
   });
 
+  it("going from 1 to 3 shares after paying this month: the month asks for the other ₹1,000 (from this month)", async () => {
+    const ravi = (await ok(api("POST", `/orgs/${orgId}/members`, { token, body: { name: "Ravi Shah", joiningDate: `${START}-01` } })))._id;
+    const pay = async (m: string, amount: string) => {
+      const r = await rowOf(m, ravi);
+      await ok(api("POST", `/orgs/${orgId}/monthly/collect`, { token, body: { installmentId: r.installmentId, amount, date: `${THIS}-01`, idempotencyKey: uniq("c") } }));
+    };
+    await pay(START, "500");
+    await pay(THIS, "500");
+    expect(await rowOf(THIS, ravi)).toMatchObject({ status: "paid", expectedPaise: 50_000 });
+    await ok(api("PATCH", `/orgs/${orgId}/members/${ravi}`, { token, body: { haptaShares: 3, sharesFromMonth: THIS } }));
+    expect(await rowOf(THIS, ravi)).toMatchObject({ expectedPaise: 150_000, collectedPaise: 50_000, outstandingPaise: 100_000 });
+    expect((await rowOf(THIS, ravi)).status).not.toBe("paid");
+    expect(await rowOf(START, ravi)).toMatchObject({ expectedPaise: 50_000, status: "paid" }); // earlier months never change
+    expect(await rowOf(NEXT, ravi)).toMatchObject({ expectedPaise: 180_000 }); // ₹600 × 3
+    // collecting the rest clears it
+    await pay(THIS, "1000");
+    expect(await rowOf(THIS, ravi)).toMatchObject({ status: "paid", collectedPaise: 150_000 });
+  });
+
+  it("'from next month' leaves this month as paid; earlier months can't be chosen", async () => {
+    const neha = (await ok(api("POST", `/orgs/${orgId}/members`, { token, body: { name: "Neha Shah", joiningDate: `${THIS}-01` } })))._id;
+    const r = await rowOf(THIS, neha);
+    await ok(api("POST", `/orgs/${orgId}/monthly/collect`, { token, body: { installmentId: r.installmentId, amount: "500", date: `${THIS}-01`, idempotencyKey: uniq("c") } }));
+    await ok(api("PATCH", `/orgs/${orgId}/members/${neha}`, { token, body: { haptaShares: 3, sharesFromMonth: NEXT } }));
+    expect(await rowOf(THIS, neha)).toMatchObject({ status: "paid", expectedPaise: 50_000 });
+    expect(await rowOf(NEXT, neha)).toMatchObject({ expectedPaise: 180_000 });
+    // already on 3 shares: applying from this month later still tops this month up
+    await ok(api("PATCH", `/orgs/${orgId}/members/${neha}`, { token, body: { haptaShares: 3, sharesFromMonth: THIS } }));
+    expect(await rowOf(THIS, neha)).toMatchObject({ expectedPaise: 150_000, outstandingPaise: 100_000 });
+    expect((await api("PATCH", `/orgs/${orgId}/members/${neha}`, { token, body: { haptaShares: 2, sharesFromMonth: START } })).status).toBe(400);
+  });
+
   it("shares must be a whole number from 1 to 50", async () => {
     expect((await api("PATCH", `/orgs/${orgId}/members/${monik}`, { token, body: { haptaShares: 0 } })).status).toBe(422);
     expect((await api("POST", `/orgs/${orgId}/members`, { token, body: { name: "Too Many", haptaShares: 51 } })).status).toBe(422);
