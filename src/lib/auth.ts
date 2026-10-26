@@ -27,14 +27,23 @@ const SESSION_TOUCH_MS = 5 * 60 * 1000;
 export async function authenticate(token: string | null | undefined): Promise<AuthContext> {
   if (!token || token.length < 20 || token.length > 200) throw unauthorized();
   const c = await cols();
-  const session = await c.sessions.findOne({ tokenHash: hashToken(token) });
-  if (!session || session.expiresAt.getTime() <= Date.now()) throw unauthorized("Session expired");
-  const user = await c.users.findOne({ _id: session.userId });
+  // Session and its user in ONE round trip (this runs on every request).
+  const [row] = await c.sessions
+    .aggregate<SessionDoc & { _user: UserDoc[] }>([
+      { $match: { tokenHash: hashToken(token) } },
+      { $limit: 1 },
+      { $lookup: { from: "users", localField: "userId", foreignField: "_id", as: "_user" } },
+    ])
+    .toArray();
+  if (!row || row.expiresAt.getTime() <= Date.now()) throw unauthorized("Session expired");
+  const { _user, ...session } = row;
+  const user = _user[0];
   if (!user || user.status !== "active" || user.sessionVersion !== session.sessionVersion) {
     throw unauthorized("Session is no longer valid");
   }
   if (Date.now() - session.lastUsedAt.getTime() > SESSION_TOUCH_MS) {
-    await c.sessions.updateOne({ _id: session._id }, { $set: { lastUsedAt: new Date() } });
+    // bookkeeping only — don't make the request wait for it
+    void c.sessions.updateOne({ _id: session._id }, { $set: { lastUsedAt: new Date() } }).catch(() => {});
   }
   return { user, session };
 }

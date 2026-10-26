@@ -71,7 +71,8 @@ export async function adminDashboard(ctx: OrgContext) {
   const chartStart = utcAddMonths(monthStart, -11);
   const orgId = ctx.orgId;
 
-  const [ledgerFacet] = await c.ledgerEntries
+  // Independent queries are started together and awaited once (one round trip instead of many).
+  const ledgerP = c.ledgerEntries
     .aggregate<{
       allTime: { _id: string; d: number; c: number }[];
       fy: { _id: string; d: number; c: number }[];
@@ -113,7 +114,7 @@ export async function adminDashboard(ctx: OrgContext) {
   const cashIn = (rows: { _id: string; v: number }[], types: string[]) => rows.filter((r) => types.includes(r._id)).reduce((s, r) => s + r.v, 0);
 
   const owedExpr = { $subtract: [{ $add: ["$amountPaise", "$penaltyPaise"] }, { $add: ["$paidPaise", "$penaltyPaidPaise"] }] };
-  const [instFacet] = await c.installments
+  const instP = c.installments
     .aggregate<{
       outstanding: { amt: number; n: number }[];
       overdue: { amt: number; n: number }[];
@@ -133,24 +134,7 @@ export async function adminDashboard(ctx: OrgContext) {
       },
     ])
     .toArray();
-  // Overdue respects each scheme's grace days.
-  const schemes = await c.haptaSchemes.find({ organizationId: orgId }, { projection: { name: 1, graceDays: 1, status: 1 } }).toArray();
-  const graceMax = Math.max(0, ...schemes.map((s) => s.graceDays));
-  let overdue = instFacet.overdue[0] ?? { amt: 0, n: 0 };
-  if (graceMax > 0) {
-    const overdueAgg = await c.installments
-      .aggregate<{ amt: number; n: number }>([
-        { $match: { organizationId: orgId, state: "active", dueDate: { $lt: today }, $expr: { $gt: [owedExpr, 0] } } },
-        { $lookup: { from: "haptaSchemes", localField: "schemeId", foreignField: "_id", as: "s" } },
-        { $set: { grace: { $ifNull: [{ $arrayElemAt: ["$s.graceDays", 0] }, 0] } } },
-        { $match: { $expr: { $lt: [{ $dateAdd: { startDate: "$dueDate", unit: "day", amount: "$grace" } }, today] } } },
-        { $group: { _id: null, amt: { $sum: owedExpr }, n: { $sum: 1 } } },
-      ])
-      .toArray();
-    overdue = overdueAgg[0] ?? { amt: 0, n: 0 };
-  }
-
-  const [loanAgg] = await c.loans
+  const loanP = c.loans
     .aggregate<{ active: number; principal: number; interestOutstanding: number; applied: number }>([
       { $match: { organizationId: orgId } },
       {
@@ -177,39 +161,79 @@ export async function adminDashboard(ctx: OrgContext) {
     .toArray();
 
   // This month's hapta: expected vs collected for installments due this month (all schemes)
-  const [mh] = await c.installments
+  const mhP = c.installments
     .aggregate<{ e: number; p: number; o: number }>([
       { $match: { organizationId: orgId, state: "active", dueDate: { $gte: monthStart, $lte: utcAddDays(utcAddMonths(monthStart, 1), -1) } } },
       { $group: { _id: null, e: { $sum: { $add: ["$amountPaise", "$penaltyPaise"] } }, p: { $sum: { $add: ["$paidPaise", "$penaltyPaidPaise"] } }, o: { $sum: { $max: [0, owedExpr] } } } },
     ])
     .toArray();
-  const monthHapta = { expected: mh?.e ?? 0, collected: mh?.p ?? 0, outstanding: mh?.o ?? 0 };
   const curMonth = today.toISOString().slice(0, 7);
-  const [ia] = await c.memberLedger
+  const iaP = c.memberLedger
     .aggregate<{ m: number; f: number }>([
       // by date credited: covers monthly interest runs and shares of interest paid on fund loans
       { $match: { organizationId: orgId, kind: "interest", date: { $gte: fy.start } } },
       { $group: { _id: null, m: { $sum: { $cond: [{ $gte: ["$date", parseDateOnly(`${curMonth}-01`)] }, { $subtract: ["$creditPaise", "$debitPaise"] }, 0] } }, f: { $sum: { $subtract: ["$creditPaise", "$debitPaise"] } } } },
     ])
     .toArray();
+
+  const [
+    [ledgerFacet],
+    [instFacet],
+    schemes,
+    [loanAgg],
+    [mh],
+    [ia],
+    fundLoans,
+    totalMembers,
+    wd,
+    [activeMembers, pendingPayments, pendingExpenses, pendingMemberships, accounts, recent, pendingUpadRequests, pendingUpadPayments],
+  ] = await Promise.all([
+    ledgerP,
+    instP,
+    c.haptaSchemes.find({ organizationId: orgId }, { projection: { name: 1, graceDays: 1, status: 1 } }).toArray(),
+    loanP,
+    mhP,
+    iaP,
+    fundLoanTotals(ctx.org),
+    c.members.countDocuments({ organizationId: orgId, status: { $ne: "left" } }),
+    c.withdrawals.find({ organizationId: orgId, status: "paid" }).sort({ date: -1, createdAt: -1 }).limit(5).toArray(),
+    Promise.all([
+      c.members.countDocuments({ organizationId: orgId, status: "active" }),
+      c.payments.countDocuments({ organizationId: orgId, status: "pending" }),
+      c.expenses.countDocuments({ organizationId: orgId, status: "pending" }),
+      c.organizationMemberships.countDocuments({ organizationId: orgId, status: "pending" }),
+      c.financialAccounts.find({ organizationId: orgId }, { projection: { name: 1, type: 1, isActive: 1 } }).toArray(),
+      c.financialTransactions.find({ organizationId: orgId }).sort({ date: -1, _id: -1 }).limit(10).toArray(),
+      c.upadRequests.countDocuments({ organizationId: orgId, status: "pending" }),
+      c.upadPaymentClaims.countDocuments({ organizationId: orgId, status: "pending" }),
+    ]),
+  ]);
+  const monthHapta = { expected: mh?.e ?? 0, collected: mh?.p ?? 0, outstanding: mh?.o ?? 0 };
   const interest = { month: ia?.m ?? 0, fy: ia?.f ?? 0 };
-  const fundLoans = await fundLoanTotals(ctx.org);
-  const totalMembers = await c.members.countDocuments({ organizationId: orgId, status: { $ne: "left" } });
-  const wd = await c.withdrawals.find({ organizationId: orgId, status: "paid" }).sort({ date: -1, createdAt: -1 }).limit(5).toArray();
-  const wdm = await c.members.find({ _id: { $in: wd.map((w) => w.memberId) } }, { projection: { name: 1 } }).toArray();
+
+  // Overdue respects each scheme's grace days.
+  const graceMax = Math.max(0, ...schemes.map((s) => s.graceDays));
+  let overdue = instFacet.overdue[0] ?? { amt: 0, n: 0 };
+  if (graceMax > 0) {
+    const overdueAgg = await c.installments
+      .aggregate<{ amt: number; n: number }>([
+        { $match: { organizationId: orgId, state: "active", dueDate: { $lt: today }, $expr: { $gt: [owedExpr, 0] } } },
+        { $lookup: { from: "haptaSchemes", localField: "schemeId", foreignField: "_id", as: "s" } },
+        { $set: { grace: { $ifNull: [{ $arrayElemAt: ["$s.graceDays", 0] }, 0] } } },
+        { $match: { $expr: { $lt: [{ $dateAdd: { startDate: "$dueDate", unit: "day", amount: "$grace" } }, today] } } },
+        { $group: { _id: null, amt: { $sum: owedExpr }, n: { $sum: 1 } } },
+      ])
+      .toArray();
+    overdue = overdueAgg[0] ?? { amt: 0, n: 0 };
+  }
+
+  // second round: lookups that depend on the results above
+  const [wdm, members] = await Promise.all([
+    c.members.find({ _id: { $in: wd.map((w) => w.memberId) } }, { projection: { name: 1 } }).toArray(),
+    c.members.find({ _id: { $in: instFacet.upcomingList.map((u) => u.memberId) } }, { projection: { name: 1 } }).toArray(),
+  ]);
   const recentWithdrawals = wd.map((w) => ({ _id: w._id, number: w.number, date: w.date, amountPaise: w.amountPaise, memberId: w.memberId, memberName: wdm.find((m) => m._id.equals(w.memberId))?.name ?? "" }));
 
-  const [activeMembers, pendingPayments, pendingExpenses, pendingMemberships, accounts, recent] = await Promise.all([
-    c.members.countDocuments({ organizationId: orgId, status: "active" }),
-    c.payments.countDocuments({ organizationId: orgId, status: "pending" }),
-    c.expenses.countDocuments({ organizationId: orgId, status: "pending" }),
-    c.organizationMemberships.countDocuments({ organizationId: orgId, status: "pending" }),
-    c.financialAccounts.find({ organizationId: orgId }, { projection: { name: 1, type: 1, isActive: 1 } }).toArray(),
-    c.financialTransactions.find({ organizationId: orgId }).sort({ date: -1, _id: -1 }).limit(10).toArray(),
-  ]);
-
-  const memberIds = instFacet.upcomingList.map((u) => u.memberId);
-  const members = await c.members.find({ _id: { $in: memberIds } }, { projection: { name: 1 } }).toArray();
   const mm = new Map(members.map((m) => [m._id.toHexString(), m.name]));
   const sm = new Map(schemes.map((s) => [s._id.toHexString(), s.name]));
 
@@ -266,7 +290,7 @@ export async function adminDashboard(ctx: OrgContext) {
       bankBalancePaise: accounts.filter((a) => a.type !== "cash").reduce((s, a) => s + byKey(ledgerFacet.allTime, faKey(a._id)), 0),
     },
     accounts: accounts.map((a) => ({ _id: a._id, name: a.name, type: a.type, isActive: a.isActive, balancePaise: byKey(ledgerFacet.allTime, faKey(a._id)) })),
-    pending: { payments: pendingPayments, expenses: pendingExpenses, memberships: pendingMemberships, loans: loanAgg?.applied ?? 0, upadRequests: await c.upadRequests.countDocuments({ organizationId: orgId, status: "pending" }), upadPayments: await c.upadPaymentClaims.countDocuments({ organizationId: orgId, status: "pending" }) },
+    pending: { payments: pendingPayments, expenses: pendingExpenses, memberships: pendingMemberships, loans: loanAgg?.applied ?? 0, upadRequests: pendingUpadRequests, upadPayments: pendingUpadPayments },
     collectionPerformance: { duePaise: perf.due, collectedPaise: perf.paid, percent: perf.due ? Math.round((perf.paid / perf.due) * 1000) / 10 : 100 },
     upcomingDues: instFacet.upcomingList.map((u) => ({ ...u, memberName: mm.get(u.memberId.toHexString()) ?? "", schemeName: sm.get(u.schemeId.toHexString()) ?? "" })),
     recentTransactions: recent,

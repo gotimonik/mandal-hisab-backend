@@ -1,4 +1,4 @@
-import { ObjectId, type ClientSession } from "mongodb";
+import { ObjectId, type AnyBulkWriteOperation, type ClientSession } from "mongodb";
 import { z } from "zod";
 import { cols } from "@/lib/collections";
 import { withTransaction } from "@/lib/db";
@@ -7,7 +7,7 @@ import { badRequest, conflict, isDuplicateKeyError, notFound } from "@/lib/error
 import { formatINR } from "@/lib/money";
 import { parseDateOnly, todayIn } from "@/lib/dates";
 import type { OrgContext } from "@/lib/auth";
-import type { FundLoanDoc, FundLoanPaymentDoc, OrganizationDoc } from "@/types/models";
+import type { FundLoanDoc, FundLoanDueDoc, FundLoanPaymentDoc, OrganizationDoc } from "@/types/models";
 import { dateOnly, idempotencyKey, money, optText, rateString } from "@/validators/common";
 import { FUND_LOANS, INCOME_KEYS, MEMBER_FUNDS, faKey, fyNumber, postTransaction, reverseTransaction } from "./ledger.service";
 import { balanceOf, requireAccount } from "./account.service";
@@ -52,53 +52,68 @@ function dueDateFor(org: Pick<OrganizationDoc, "settings">, period: string) {
 
 /* ------------------------------------------------------------------ monthly interest dues */
 
-/** Principal outstanding at the end of `asOf` (inclusive), from the valid payments. */
-async function outstandingAt(loan: FundLoanDoc, asOf: Date, session?: ClientSession) {
-  if (asOf < loan.date) return 0;
-  const c = await cols();
-  const [r] = await c.fundLoanPayments
-    .aggregate<{ t: number }>([{ $match: { organizationId: loan.organizationId, loanId: loan._id, status: "valid", date: { $lte: asOf } } }, { $group: { _id: null, t: { $sum: "$principalPaise" } } }], { session })
-    .toArray();
-  return loan.principalPaise - (r?.t ?? 0);
-}
-
 /**
- * Create / refresh the monthly interest dues of a loan up to the current month. Idempotent.
+ * Create / refresh the monthly interest dues of loans up to the current month. Idempotent.
  * Unpaid dues are recalculated (e.g. after a principal repayment recorded late); dues that have
  * been (partly) paid are never changed.
+ *
+ * Done in a fixed number of round trips regardless of how many loans / months there are:
+ * one read of the dues, one read of the payments, one bulk write of the changes.
  */
-async function refreshLoanDues(org: Pick<OrganizationDoc, "_id" | "settings">, loan: FundLoanDoc, session?: ClientSession) {
-  if (loan.status === "cancelled") return;
+async function refreshDuesFor(org: Pick<OrganizationDoc, "_id" | "settings">, loans: FundLoanDoc[], session?: ClientSession) {
+  const live = loans.filter((l) => l.status !== "cancelled");
+  if (live.length === 0) return;
   const c = await cols();
   const current = monthOf(todayIn(org.settings.timezone));
-  const existing = await c.fundLoanDues.find({ organizationId: org._id, loanId: loan._id }, { session }).toArray();
-  const byPeriod = new Map(existing.map((d) => [d.period, d]));
-  for (let p = loan.firstInterestMonth; p <= current; p = nextMonth(p)) {
-    const basis = await outstandingAt(loan, lastOfMonth(prevMonth(p)), session);
-    const interest = rateInterest(basis, loan.monthlyRate);
-    const due = byPeriod.get(p);
-    if (!due) {
-      if (interest <= 0) continue;
-      const now = new Date();
-      try {
-        await c.fundLoanDues.insertOne(
-          { _id: new ObjectId(), organizationId: org._id, loanId: loan._id, memberId: loan.memberId, period: p, dueDate: dueDateFor(org, p), principalBasisPaise: basis, monthlyRate: loan.monthlyRate, interestPaise: interest, paidPaise: 0, createdAt: now, updatedAt: now },
-          { session },
-        );
-      } catch (e) {
-        if (!isDuplicateKeyError(e)) throw e; // created concurrently
+  const ids = live.map((l) => l._id);
+  const [existing, payments] = await Promise.all([
+    c.fundLoanDues.find({ organizationId: org._id, loanId: { $in: ids } }, { session, projection: { loanId: 1, period: 1, paidPaise: 1, interestPaise: 1, principalBasisPaise: 1 } }).toArray(),
+    c.fundLoanPayments.find({ organizationId: org._id, loanId: { $in: ids }, status: "valid", principalPaise: { $gt: 0 } }, { session, projection: { loanId: 1, date: 1, principalPaise: 1 } }).toArray(),
+  ]);
+  const now = new Date();
+  const ops: AnyBulkWriteOperation<FundLoanDueDoc>[] = [];
+  for (const loan of live) {
+    const key = loan._id.toHexString();
+    const byPeriod = new Map(existing.filter((d) => d.loanId.toHexString() === key).map((d) => [d.period, d]));
+    const repaid = payments.filter((p) => p.loanId.toHexString() === key);
+    /** principal still outstanding at the end of `asOf` (inclusive) */
+    const outstandingAt = (asOf: Date) => (asOf < loan.date ? 0 : loan.principalPaise - repaid.filter((p) => p.date <= asOf).reduce((t, p) => t + p.principalPaise, 0));
+    for (let p = loan.firstInterestMonth; p <= current; p = nextMonth(p)) {
+      const basis = outstandingAt(lastOfMonth(prevMonth(p)));
+      const interest = rateInterest(basis, loan.monthlyRate);
+      const due = byPeriod.get(p);
+      if (!due) {
+        if (interest <= 0) continue;
+        // upsert + $setOnInsert: never overwrites a due created concurrently
+        ops.push({
+          updateOne: {
+            filter: { organizationId: org._id, loanId: loan._id, period: p },
+            update: { $setOnInsert: { _id: new ObjectId(), organizationId: org._id, loanId: loan._id, memberId: loan.memberId, period: p, dueDate: dueDateFor(org, p), principalBasisPaise: basis, monthlyRate: loan.monthlyRate, interestPaise: interest, paidPaise: 0, createdAt: now, updatedAt: now } },
+            upsert: true,
+          },
+        });
+      } else if (due.paidPaise === 0 && (due.interestPaise !== interest || due.principalBasisPaise !== basis)) {
+        if (interest <= 0) ops.push({ deleteOne: { filter: { _id: due._id, paidPaise: 0 } } });
+        else ops.push({ updateOne: { filter: { _id: due._id, paidPaise: 0 }, update: { $set: { principalBasisPaise: basis, interestPaise: interest, monthlyRate: loan.monthlyRate, updatedAt: now } } } });
       }
-    } else if (due.paidPaise === 0 && (due.interestPaise !== interest || due.principalBasisPaise !== basis)) {
-      if (interest <= 0) await c.fundLoanDues.deleteOne({ _id: due._id, paidPaise: 0 }, { session });
-      else await c.fundLoanDues.updateOne({ _id: due._id, paidPaise: 0 }, { $set: { principalBasisPaise: basis, interestPaise: interest, monthlyRate: loan.monthlyRate, updatedAt: new Date() } }, { session });
     }
   }
+  if (ops.length === 0) return;
+  try {
+    await c.fundLoanDues.bulkWrite(ops, { ordered: false, session });
+  } catch (e) {
+    if (!isDuplicateKeyError(e)) throw e; // a concurrent request created the same month first
+  }
+}
+
+async function refreshLoanDues(org: Pick<OrganizationDoc, "_id" | "settings">, loan: FundLoanDoc, session?: ClientSession) {
+  await refreshDuesFor(org, [loan], session);
 }
 
 export async function refreshFundLoanDues(org: Pick<OrganizationDoc, "_id" | "settings">, loanId?: ObjectId) {
   const c = await cols();
   const loans = await c.fundLoans.find({ organizationId: org._id, status: "active", ...(loanId ? { _id: loanId } : {}) }).toArray();
-  for (const l of loans) await refreshLoanDues(org, l);
+  await refreshDuesFor(org, loans);
 }
 
 /* ------------------------------------------------------------------ give a loan */
@@ -510,13 +525,13 @@ async function summarize(orgId: ObjectId, loans: FundLoanDoc[]): Promise<LoanSum
 export const FundLoanListQuery = z.object({ status: z.enum(["active", "closed", "cancelled", "all"]).default("active"), memberId: z.string().optional() });
 
 export async function listFundLoans(ctx: OrgContext, q: z.infer<typeof FundLoanListQuery>, restrictMemberId?: ObjectId) {
-  await refreshFundLoanDues(ctx.org);
   const c = await cols();
   const filter: Record<string, unknown> = { organizationId: ctx.orgId };
   if (q.status !== "all") filter.status = q.status;
   if (restrictMemberId) filter.memberId = restrictMemberId;
   else if (q.memberId && ObjectId.isValid(q.memberId)) filter.memberId = new ObjectId(q.memberId);
-  const loans = await c.fundLoans.find(filter).sort({ status: 1, date: -1 }).limit(500).toArray();
+  // the dues refresh only writes dues, so the loans can be read at the same time
+  const [, loans] = await Promise.all([refreshFundLoanDues(ctx.org), c.fundLoans.find(filter).sort({ status: 1, date: -1 }).limit(500).toArray()]);
   const items = await summarize(ctx.orgId, loans);
   const active = items.filter((l) => l.status === "active");
   return {

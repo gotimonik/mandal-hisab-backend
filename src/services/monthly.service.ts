@@ -125,19 +125,39 @@ export async function monthView(ctx: OrgContext, q: z.infer<typeof MonthQuery>) 
   const m = q.month ?? monthOf(today);
   const from = firstOfMonth(m);
   const to = lastOfMonth(m);
-  const primary = await primaryScheme(ctx.orgId);
+  // round 1: schemes (incl. the primary one) and the month's hapta cash, in parallel
+  const [schemes, [cash]] = await Promise.all([
+    c.haptaSchemes.find({ organizationId: ctx.orgId }, { projection: { name: 1, graceDays: 1, isPrimary: 1, status: 1 } }).toArray(),
+    // Cash actually received during the month for hapta (by payment date, net of reversals).
+    c.ledgerEntries
+      .aggregate<{ v: number }>([
+        { $match: { organizationId: ctx.orgId, date: { $gte: from, $lte: to }, accountKey: { $regex: "^fa:" } } },
+        { $match: { $expr: { $eq: [{ $ifNull: ["$originalType", "$transactionType"] }, "hapta_collection"] } } },
+        { $group: { _id: null, v: { $sum: { $subtract: ["$debitPaise", "$creditPaise"] } } } },
+      ])
+      .toArray(),
+  ]);
+  const primary = schemes.find((x) => x.isPrimary) ?? null;
   const schemeId = q.schemeId && ObjectId.isValid(q.schemeId) ? new ObjectId(q.schemeId) : primary?._id ?? null;
   const filter: Record<string, unknown> = { organizationId: ctx.orgId, dueDate: { $gte: from, $lte: to }, state: { $ne: "cancelled" } };
   if (schemeId) filter.schemeId = schemeId;
+  // round 2: the month's installments
   const insts = await c.installments.find(filter, { projection: { history: 0 } }).toArray();
-  const schemes = await c.haptaSchemes.find({ organizationId: ctx.orgId }, { projection: { name: 1, graceDays: 1, isPrimary: 1, status: 1 } }).toArray();
   const sm = new Map(schemes.map((s) => [s._id.toHexString(), s]));
-  const members = await c.members.find({ organizationId: ctx.orgId, _id: { $in: insts.map((i) => i.memberId) } }, { projection: { name: 1, membershipNumber: 1, phone: 1 } }).toArray();
+  // round 3: members, payments and not-enrolled members, in parallel
+  const [members, payments, notEnrolled] = await Promise.all([
+    c.members.find({ organizationId: ctx.orgId, _id: { $in: insts.map((i) => i.memberId) } }, { projection: { name: 1, membershipNumber: 1, phone: 1 } }).toArray(),
+    c.payments
+      .find({ organizationId: ctx.orgId, status: "verified", "allocations.installmentId": { $in: insts.map((i) => i._id) } }, { projection: { date: 1, allocations: 1, recordedBy: 1, verifiedBy: 1, receiptId: 1, amountPaise: 1 } })
+      .sort({ date: 1 })
+      .toArray(),
+    // Active members who have no installment this month (not enrolled / joined later).
+    schemeId && primary && schemeId.equals(primary._id)
+      ? c.members.find({ organizationId: ctx.orgId, status: "active", _id: { $nin: insts.map((i) => i.memberId) } }, { projection: { name: 1, membershipNumber: 1 } }).sort({ name: 1 }).toArray()
+      : Promise.resolve([]),
+  ]);
   const mm = new Map(members.map((x) => [x._id.toHexString(), x]));
-  const payments = await c.payments
-    .find({ organizationId: ctx.orgId, status: "verified", "allocations.installmentId": { $in: insts.map((i) => i._id) } }, { projection: { date: 1, allocations: 1, recordedBy: 1, verifiedBy: 1, receiptId: 1, amountPaise: 1 } })
-    .sort({ date: 1 })
-    .toArray();
+  // round 4: names of who recorded the payments
   const users = await c.users.find({ _id: { $in: payments.flatMap((p) => [p.recordedBy, p.verifiedBy].filter(Boolean) as ObjectId[]) } }, { projection: { name: 1 } }).toArray();
   const um = new Map(users.map((u) => [u._id.toHexString(), u.name]));
 
@@ -167,22 +187,9 @@ export async function monthView(ctx: OrgContext, q: z.infer<typeof MonthQuery>) 
     })
     .sort((a, b) => (a.member?.name ?? "").localeCompare(b.member?.name ?? ""));
 
-  // Active members who have no installment this month (not enrolled / joined later).
-  const notEnrolled =
-    schemeId && primary && schemeId.equals(primary._id)
-      ? await c.members.find({ organizationId: ctx.orgId, status: "active", _id: { $nin: insts.map((i) => i.memberId) } }, { projection: { name: 1, membershipNumber: 1 } }).sort({ name: 1 }).toArray()
-      : [];
 
   const active = rows.filter((r) => r.state === "active");
   const count = (st: string) => rows.filter((r) => r.status === st).length;
-  // Cash actually received during the month for hapta (by payment date, net of reversals).
-  const [cash] = await c.ledgerEntries
-    .aggregate<{ v: number }>([
-      { $match: { organizationId: ctx.orgId, date: { $gte: from, $lte: to }, accountKey: { $regex: "^fa:" } } },
-      { $match: { $expr: { $eq: [{ $ifNull: ["$originalType", "$transactionType"] }, "hapta_collection"] } } },
-      { $group: { _id: null, v: { $sum: { $subtract: ["$debitPaise", "$creditPaise"] } } } },
-    ])
-    .toArray();
 
   return {
     month: m,
