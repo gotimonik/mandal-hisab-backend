@@ -1,3 +1,4 @@
+import { formatMoney } from "@/lib/currency";
 import { ObjectId } from "mongodb";
 import { z } from "zod";
 import { cols } from "@/lib/collections";
@@ -170,7 +171,7 @@ export async function finalizeInterest(ctx: OrgContext, input: z.infer<typeof Fi
             creditPaise: l.amount,
             description:
               input.mode === "rate"
-                ? `Interest ${input.period}: ${preview.monthlyRate}% on ₹${(l.row.eligibleBalancePaise! / 100).toFixed(2)}`
+                ? `Interest ${input.period}: ${preview.monthlyRate}% on ${formatMoney(l.row.eligibleBalancePaise!, ctx.org.settings.currency)}`
                 : `Interest ${input.period} (manual)`,
             period: input.period,
             sourceType: "interestRun",
@@ -206,7 +207,7 @@ export async function finalizeInterest(ctx: OrgContext, input: z.infer<typeof Fi
       return doc;
     });
     for (const l of lines) {
-      await notifyMember(ctx.orgId, l.row.memberId, { type: "interest.credited", title: "Interest credited", body: `₹${(l.amount / 100).toFixed(2)} interest for ${input.period} was added to your balance.`, link: `/org/${ctx.orgId}/my`, dedupeKey: `interest:${input.period}` });
+      await notifyMember(ctx.orgId, l.row.memberId, { type: "interest.credited", title: "Interest credited", body: `${formatMoney(l.amount, ctx.org.settings.currency)} interest for ${input.period} was added to your balance.`, link: `/org/${ctx.orgId}/my`, dedupeKey: `interest:${input.period}` });
     }
     return { run, duplicate: false };
   } catch (e) {

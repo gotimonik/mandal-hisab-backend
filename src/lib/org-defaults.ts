@@ -1,3 +1,4 @@
+import { DEFAULT_CURRENCY } from "./currency";
 import { DEFAULT_MANAGER_FLAGS } from "./permissions";
 import type { OrganizationDoc, OrganizationSettings } from "@/types/models";
 
@@ -19,7 +20,7 @@ export const DEFAULT_EXPENSE_CATEGORIES = [
 export function defaultSettings(): OrganizationSettings {
   return {
     financialYearStartMonth: 4,
-    currency: "INR",
+    currency: DEFAULT_CURRENCY,
     timezone: "Asia/Kolkata",
     receiptPrefix: "RCPT",
     requirePaymentVerification: true,

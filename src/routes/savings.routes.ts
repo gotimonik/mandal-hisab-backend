@@ -49,7 +49,7 @@ export function registerSavingsRoutes(r: Router) {
     const ctx = await req.org("members.view");
     const data = await ledger.memberLedgerStatement(ctx, parseObjectId(req.params.id, "Member"), req.queryAs(ledger.MemberLedgerQuery.extend({ format: z.string().optional() })));
     if (wantsCsv(req.query)) {
-      const t = toTable("member-ledger", data as unknown as Record<string, unknown>);
+      const t = toTable("member-ledger", data as unknown as Record<string, unknown>, ctx.org.settings.currency);
       return csvResponse(`savings-${data.member.membershipNumber}.csv`, toCsv(t.headers, t.rows));
     }
     return data;
@@ -59,7 +59,7 @@ export function registerSavingsRoutes(r: Router) {
     if (!ctx.membership.memberId) throw forbidden("Your login is not linked to a member record yet");
     const data = await ledger.memberLedgerStatement(ctx, ctx.membership.memberId, req.queryAs(ledger.MemberLedgerQuery.extend({ format: z.string().optional() })));
     if (wantsCsv(req.query)) {
-      const t = toTable("member-ledger", data as unknown as Record<string, unknown>);
+      const t = toTable("member-ledger", data as unknown as Record<string, unknown>, ctx.org.settings.currency);
       return csvResponse(`my-savings-${data.member.membershipNumber}.csv`, toCsv(t.headers, t.rows));
     }
     return data;
@@ -161,7 +161,7 @@ export function registerSavingsRoutes(r: Router) {
     const ctx = await req.org("accounts.view");
     const data = await cash.cashBook(ctx, req.queryAs(cash.CashBookQuery.extend({ format: z.string().optional() })));
     if (wantsCsv(req.query)) {
-      const t = toTable("cashbook", data as unknown as Record<string, unknown>);
+      const t = toTable("cashbook", data as unknown as Record<string, unknown>, ctx.org.settings.currency);
       return csvResponse(`cashbook-${new Date().toISOString().slice(0, 10)}.csv`, toCsv(t.headers, t.rows));
     }
     return data;
@@ -173,7 +173,7 @@ export function registerSavingsRoutes(r: Router) {
     const ctx = await req.org("reports.view");
     const data = await monthlyReport(ctx, req.query.get("month") ?? undefined);
     if (wantsCsv(req.query)) {
-      const t = toTable("monthly", data as unknown as Record<string, unknown>);
+      const t = toTable("monthly", data as unknown as Record<string, unknown>, ctx.org.settings.currency);
       return csvResponse(`monthly-${data.month}.csv`, toCsv(t.headers, t.rows));
     }
     return data;

@@ -50,7 +50,7 @@ export function registerFinanceRoutes(r: Router) {
     const q = req.queryAs(reports.ReportQuery);
     const data = (await def.fn(ctx, q)) as Record<string, unknown>;
     if (q.format === "csv") {
-      const t = reports.toTable(req.params.kind, data);
+      const t = reports.toTable(req.params.kind, data, ctx.org.settings.currency);
       return csvResponse(`${req.params.kind}-${new Date().toISOString().slice(0, 10)}.csv`, toCsv(t.headers, t.rows));
     }
     return data;
@@ -60,7 +60,7 @@ export function registerFinanceRoutes(r: Router) {
     const q = req.queryAs(reports.ReportQuery);
     const data = await reports.memberStatement(ctx, req.params.id, q);
     if (q.format === "csv") {
-      const t = reports.toTable("member-statement", data as unknown as Record<string, unknown>);
+      const t = reports.toTable("member-statement", data as unknown as Record<string, unknown>, ctx.org.settings.currency);
       return csvResponse(`statement-${data.member.membershipNumber}.csv`, toCsv(t.headers, t.rows));
     }
     return data;
@@ -71,7 +71,7 @@ export function registerFinanceRoutes(r: Router) {
     const q = req.queryAs(reports.ReportQuery);
     const data = await reports.memberStatement(ctx, ctx.membership.memberId.toHexString(), q);
     if (q.format === "csv") {
-      const t = reports.toTable("member-statement", data as unknown as Record<string, unknown>);
+      const t = reports.toTable("member-statement", data as unknown as Record<string, unknown>, ctx.org.settings.currency);
       return csvResponse(`statement-${data.member.membershipNumber}.csv`, toCsv(t.headers, t.rows));
     }
     return data;

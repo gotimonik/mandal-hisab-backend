@@ -1,10 +1,10 @@
+import { formatMoney } from "@/lib/currency";
 import { ObjectId, type AnyBulkWriteOperation, type ClientSession } from "mongodb";
 import { z } from "zod";
 import { cols } from "@/lib/collections";
 import { withTransaction } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { badRequest, conflict, isDuplicateKeyError, notFound } from "@/lib/errors";
-import { formatINR } from "@/lib/money";
 import { parseDateOnly, todayIn } from "@/lib/dates";
 import type { OrgContext } from "@/lib/auth";
 import type { FundLoanDoc, FundLoanDueDoc, FundLoanPaymentDoc, OrganizationDoc } from "@/types/models";
@@ -152,7 +152,7 @@ export async function giveFundLoan(ctx: OrgContext, input: z.infer<typeof GiveLo
     const loan = await withTransaction(async (session) => {
       const account = await requireAccount(ctx.orgId, accountId!, session);
       const cashBal = await balanceOf(ctx.orgId, account._id, session);
-      if (cashBal < input.amount) throw badRequest(`${account.name} has only ${formatINR(cashBal)} — the Mandal can't give more cash than it holds`);
+      if (cashBal < input.amount) throw badRequest(`${account.name} has only ${formatMoney(cashBal, ctx.org.settings.currency)} — the Mandal can't give more cash than it holds`);
       const id = new ObjectId();
       const number = await fyNumber(ctx.org, "UPAD", input.date, session);
       const txn = await postTransaction(
@@ -201,7 +201,7 @@ export async function giveFundLoan(ctx: OrgContext, input: z.infer<typeof GiveLo
     await notifyMember(ctx.orgId, loan.memberId, {
       type: "fundLoan.given",
       title: "Upad given",
-      body: `${formatINR(loan.principalPaise)} given to you from the Mandal fund (${loan.number}). Interest ${loan.monthlyRate}% per month from ${loan.firstInterestMonth}.`,
+      body: `${formatMoney(loan.principalPaise, ctx.org.settings.currency)} given to you from the Mandal fund (${loan.number}). Interest ${loan.monthlyRate}% per month from ${loan.firstInterestMonth}.`,
       link: `/org/${ctx.orgId}/my`,
       dedupeKey: `fl:${loan._id}`,
     });
@@ -297,7 +297,7 @@ export async function receiveFundLoanPayment(ctx: OrgContext, loanId: ObjectId, 
       if (input.interestAmount > 0) {
         const dues = await c.fundLoanDues.find({ organizationId: ctx.orgId, loanId: loan._id }, { session }).sort({ period: 1 }).toArray();
         const unpaid = dues.reduce((s, d) => s + d.interestPaise - d.paidPaise, 0);
-        if (input.interestAmount > unpaid) throw badRequest(unpaid === 0 ? "No interest is due on this upad right now" : `Only ${formatINR(unpaid)} interest is due on this upad`);
+        if (input.interestAmount > unpaid) throw badRequest(unpaid === 0 ? "No interest is due on this upad right now" : `Only ${formatMoney(unpaid, ctx.org.settings.currency)} interest is due on this upad`);
         let left = input.interestAmount;
         for (const d of dues) {
           if (left <= 0) break;
@@ -325,7 +325,7 @@ export async function receiveFundLoanPayment(ctx: OrgContext, loanId: ObjectId, 
         );
         if (r.modifiedCount !== 1) {
           const now = await c.fundLoans.findOne({ _id: loan._id }, { session, projection: { outstandingPaise: 1 } });
-          throw badRequest(`Only ${formatINR(now?.outstandingPaise ?? 0)} of the upad is outstanding`);
+          throw badRequest(`Only ${formatMoney(now?.outstandingPaise ?? 0, ctx.org.settings.currency)} of the upad is outstanding`);
         }
       }
 
@@ -345,7 +345,7 @@ export async function receiveFundLoanPayment(ctx: OrgContext, loanId: ObjectId, 
           org: ctx.org,
           type: "fund_loan_payment",
           date: input.date,
-          description: `${member?.name ?? "Member"} — upad ${number}: ${[input.interestAmount ? `interest ${formatINR(input.interestAmount)}${periodText ? ` (${periodText})` : ""}` : "", input.principalAmount ? `upad returned ${formatINR(input.principalAmount)}` : ""].filter(Boolean).join(", ")}`,
+          description: `${member?.name ?? "Member"} — upad ${number}: ${[input.interestAmount ? `interest ${formatMoney(input.interestAmount, ctx.org.settings.currency)}${periodText ? ` (${periodText})` : ""}` : "", input.principalAmount ? `upad returned ${formatMoney(input.principalAmount, ctx.org.settings.currency)}` : ""].filter(Boolean).join(", ")}`,
           lines,
           createdBy: ctx.user._id,
           memberId: loan.memberId,

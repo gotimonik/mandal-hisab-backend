@@ -1,10 +1,10 @@
+import { formatMoney } from "@/lib/currency";
 import { ObjectId } from "mongodb";
 import { z } from "zod";
 import { cols } from "@/lib/collections";
 import { withTransaction } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { badRequest, conflict, forbidden, isDuplicateKeyError, notFound } from "@/lib/errors";
-import { formatINR } from "@/lib/money";
 import { todayIn } from "@/lib/dates";
 import type { OrgContext } from "@/lib/auth";
 import type { DonationDoc, ExpenseDoc } from "@/types/models";
@@ -262,7 +262,7 @@ export async function submitExpense(ctx: OrgContext, input: z.infer<typeof Expen
       await notifyRoles(ctx.orgId, ["admin"], {
         type: "expense.pending",
         title: "Expense awaiting approval",
-        body: `${formatINR(doc.amountPaise)} to ${doc.payeeName} (${cat.name}) needs approval.`,
+        body: `${formatMoney(doc.amountPaise, ctx.org.settings.currency)} to ${doc.payeeName} (${cat.name}) needs approval.`,
         link: `/org/${ctx.orgId}/expenses?status=pending`,
         dedupeKey: `expense-pending:${doc._id}`,
       });
@@ -283,7 +283,7 @@ async function approveInSession(ctx: OrgContext, id: ObjectId, session: import("
   if (!e) throw notFound("Expense");
   if (e.status !== "pending") throw conflict(`Expense is already ${e.status}`);
   const threshold = ctx.org.settings.expenseApprovalThresholdPaise;
-  if (ctx.role !== "admin" && threshold > 0 && e.amountPaise > threshold) throw forbidden(`Expenses above ${formatINR(threshold)} need admin approval`);
+  if (ctx.role !== "admin" && threshold > 0 && e.amountPaise > threshold) throw forbidden(`Expenses above ${formatMoney(threshold, ctx.org.settings.currency)} need admin approval`);
   const now = new Date();
   const claimed = await c.expenses.updateOne({ _id: id, status: "pending" }, { $set: { status: "approved", approvedBy: ctx.user._id, approvedAt: now, updatedAt: now } }, { session });
   if (claimed.modifiedCount !== 1) throw conflict("Expense already processed");
@@ -291,7 +291,7 @@ async function approveInSession(ctx: OrgContext, id: ObjectId, session: import("
   if (e.paidBy === "organization") {
     const fa = await requireAccount(ctx.orgId, e.accountId!, session);
     const bal = await balanceOf(ctx.orgId, fa._id, session);
-    if (bal < e.amountPaise) throw badRequest(`Insufficient balance in ${fa.name} (${formatINR(bal)})`);
+    if (bal < e.amountPaise) throw badRequest(`Insufficient balance in ${fa.name} (${formatMoney(bal, ctx.org.settings.currency)})`);
     creditKey = faKey(fa._id);
   } else {
     creditKey = REIMBURSEMENTS_PAYABLE;
@@ -321,7 +321,7 @@ async function approveInSession(ctx: OrgContext, id: ObjectId, session: import("
 export async function approveExpense(ctx: OrgContext, id: ObjectId) {
   const e = await withTransaction((s) => approveInSession(ctx, id, s));
   if (!e.submittedBy.equals(ctx.user._id)) {
-    await notify({ organizationId: ctx.orgId, userId: e.submittedBy, type: "expense.approved", title: "Expense approved", body: `${formatINR(e.amountPaise)} to ${e.payeeName} was approved.`, link: `/org/${ctx.orgId}/expenses`, dedupeKey: `expense-approved:${id}` });
+    await notify({ organizationId: ctx.orgId, userId: e.submittedBy, type: "expense.approved", title: "Expense approved", body: `${formatMoney(e.amountPaise, ctx.org.settings.currency)} to ${e.payeeName} was approved.`, link: `/org/${ctx.orgId}/expenses`, dedupeKey: `expense-approved:${id}` });
   }
   return e;
 }
@@ -335,7 +335,7 @@ export async function rejectExpense(ctx: OrgContext, id: ObjectId, reasonText: s
   );
   if (!e) throw conflict("Only pending expenses can be rejected");
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "expense.reject", entityType: "expense", entityId: id, reason: reasonText });
-  await notify({ organizationId: ctx.orgId, userId: e.submittedBy, type: "expense.rejected", title: "Expense rejected", body: `${formatINR(e.amountPaise)} to ${e.payeeName}: ${reasonText}`, link: `/org/${ctx.orgId}/expenses`, dedupeKey: `expense-rejected:${id}` });
+  await notify({ organizationId: ctx.orgId, userId: e.submittedBy, type: "expense.rejected", title: "Expense rejected", body: `${formatMoney(e.amountPaise, ctx.org.settings.currency)} to ${e.payeeName}: ${reasonText}`, link: `/org/${ctx.orgId}/expenses`, dedupeKey: `expense-rejected:${id}` });
   return e;
 }
 

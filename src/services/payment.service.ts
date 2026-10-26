@@ -1,10 +1,10 @@
+import { formatMoney } from "@/lib/currency";
 import { ObjectId, type ClientSession } from "mongodb";
 import { z } from "zod";
 import { cols } from "@/lib/collections";
 import { withTransaction } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { badRequest, conflict, forbidden, isDuplicateKeyError, notFound } from "@/lib/errors";
-import { formatINR } from "@/lib/money";
 import { todayIn } from "@/lib/dates";
 import type { OrgContext } from "@/lib/auth";
 import type { OrganizationDoc, PaymentAllocation, PaymentDoc, PaymentKind } from "@/types/models";
@@ -90,6 +90,7 @@ export async function autoAllocate(
   amountPaise: number,
   schemeId?: ObjectId | null,
   session?: ClientSession,
+  currency?: string,
 ): Promise<PaymentAllocation[]> {
   const c = await cols();
   const q: Record<string, unknown> = {
@@ -112,7 +113,7 @@ export async function autoAllocate(
   }
   if (left > 0) {
     const total = amountPaise - left;
-    throw badRequest(`Amount exceeds the member's outstanding installments (${formatINR(total)}). Record the extra as a donation or other income.`);
+    throw badRequest(`Amount exceeds the member's outstanding installments (${formatMoney(total, currency)}). Record the extra as a donation or other income.`);
   }
   return out;
 }
@@ -157,7 +158,7 @@ export async function recordPayment(ctx: OrgContext, input: z.infer<typeof Recor
       const n = await c.installments.countDocuments({ _id: { $in: allocations.map((a) => a.installmentId) }, organizationId: ctx.orgId, memberId: member!._id });
       if (n !== allocations.length) throw badRequest("Allocations must be this member's installments");
     } else {
-      allocations = await autoAllocate(ctx.orgId, member!._id, input.amount, schemeId);
+      allocations = await autoAllocate(ctx.orgId, member!._id, input.amount, schemeId, undefined, ctx.org.settings.currency);
     }
   }
 
@@ -198,7 +199,7 @@ export async function recordPayment(ctx: OrgContext, input: z.infer<typeof Recor
       await notifyRoles(ctx.orgId, ["admin"], {
         type: "payment.pending",
         title: "Payment awaiting verification",
-        body: `${formatINR(doc.amountPaise)} from ${doc.payerName ?? "a member"} needs verification.`,
+        body: `${formatMoney(doc.amountPaise, ctx.org.settings.currency)} from ${doc.payerName ?? "a member"} needs verification.`,
         link: `/org/${ctx.orgId}/collections?status=pending`,
         dedupeKey: `payment-pending:${doc._id}`,
       });
@@ -222,7 +223,7 @@ export async function submitMemberPaymentRequest(ctx: OrgContext, input: z.infer
   const schemeId = input.schemeId && ObjectId.isValid(input.schemeId) ? new ObjectId(input.schemeId) : null;
   const isHapta = input.purpose === "hapta";
   if (!isHapta && !input.notes) throw badRequest("Say what this payment is for");
-  const allocations = isHapta ? await autoAllocate(ctx.orgId, memberId, input.amount, schemeId) : [];
+  const allocations = isHapta ? await autoAllocate(ctx.orgId, memberId, input.amount, schemeId, undefined, ctx.org.settings.currency) : [];
   const c = await cols();
   const member = await c.members.findOne({ _id: memberId, organizationId: ctx.orgId });
   const now = new Date();
@@ -258,7 +259,7 @@ export async function submitMemberPaymentRequest(ctx: OrgContext, input: z.infer
   await notifyRoles(ctx.orgId, ["admin", "manager"], {
     type: "payment.request",
     title: "Payment submitted by member",
-    body: `${member?.name ?? "A member"} reported a payment of ${formatINR(doc.amountPaise)} for ${isHapta ? "monthly hapta" : input.notes} (${doc.method}${doc.reference ? ` ref ${doc.reference}` : ""}).`,
+    body: `${member?.name ?? "A member"} reported a payment of ${formatMoney(doc.amountPaise, ctx.org.settings.currency)} for ${isHapta ? "monthly hapta" : input.notes} (${doc.method}${doc.reference ? ` ref ${doc.reference}` : ""}).`,
     link: `/org/${ctx.orgId}/collections?status=pending`,
     dedupeKey: `payment-request:${doc._id}`,
   });
@@ -290,7 +291,7 @@ async function verifyInSession(ctx: OrgContext, paymentId: ObjectId, accountOver
   // System allocations are recomputed against the latest balances inside the
   // transaction, so concurrent payments for the same member never double-allocate.
   if (p.autoAllocated && p.memberId) {
-    p.allocations = await autoAllocate(ctx.orgId, p.memberId, p.amountPaise, p.schemeId, session);
+    p.allocations = await autoAllocate(ctx.orgId, p.memberId, p.amountPaise, p.schemeId, session, ctx.org.settings.currency);
     await c.payments.updateOne({ _id: p._id }, { $set: { allocations: p.allocations } }, { session });
   }
 
@@ -413,7 +414,7 @@ async function afterVerify(ctx: OrgContext, p: PaymentDoc) {
   await notifyMember(ctx.orgId, p.memberId, {
     type: "payment.verified",
     title: "Payment received",
-    body: `Your payment of ${formatINR(p.amountPaise)} has been verified. Your receipt is ready.`,
+    body: `Your payment of ${formatMoney(p.amountPaise, ctx.org.settings.currency)} has been verified. Your receipt is ready.`,
     link: p.receiptId ? `/org/${ctx.orgId}/receipts/${p.receiptId}` : `/org/${ctx.orgId}/my`,
     dedupeKey: `payment-verified:${p._id}`,
   });
@@ -437,7 +438,7 @@ export async function rejectPayment(ctx: OrgContext, id: ObjectId, reasonText: s
   await notifyMember(ctx.orgId, r.memberId, {
     type: "payment.rejected",
     title: "Payment not verified",
-    body: `Your payment of ${formatINR(r.amountPaise)} could not be verified: ${reasonText}`,
+    body: `Your payment of ${formatMoney(r.amountPaise, ctx.org.settings.currency)} could not be verified: ${reasonText}`,
     link: `/org/${ctx.orgId}/my`,
     dedupeKey: `payment-rejected:${id}`,
   });

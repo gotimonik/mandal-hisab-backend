@@ -1,10 +1,10 @@
+import { formatMoney } from "@/lib/currency";
 import { ObjectId, type ClientSession } from "mongodb";
 import { z } from "zod";
 import { cols } from "@/lib/collections";
 import { withTransaction } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { badRequest, conflict, isDuplicateKeyError, notFound } from "@/lib/errors";
-import { formatINR } from "@/lib/money";
 import { todayIn, utcAddDays } from "@/lib/dates";
 import type { OrgContext } from "@/lib/auth";
 import type { MemberEntryKind, MemberLedgerEntryDoc, OrganizationDoc } from "@/types/models";
@@ -25,7 +25,7 @@ import { ADJUSTMENT_EQUITY, MEMBER_FUNDS, OPENING_EQUITY, postTransaction } from
  */
 
 export interface MemberEntryInput {
-  org: Pick<OrganizationDoc, "_id">;
+  org: Pick<OrganizationDoc, "_id"> & { settings?: { currency?: string } };
   memberId: ObjectId;
   date: Date;
   kind: MemberEntryKind;
@@ -57,7 +57,7 @@ export async function postMemberEntry(input: MemberEntryInput, session: ClientSe
   if (!updated) {
     const m = await c.members.findOne({ _id: input.memberId, organizationId: input.org._id }, { session, projection: { balancePaise: 1 } });
     if (!m) throw notFound("Member");
-    throw badRequest(`Amount exceeds the member's available balance of ${formatINR(m.balancePaise ?? 0)}`);
+    throw badRequest(`Amount exceeds the member's available balance of ${formatMoney(m.balancePaise ?? 0, input.org.settings?.currency)}`);
   }
   const entry: MemberLedgerEntryDoc = {
     _id: new ObjectId(),

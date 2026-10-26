@@ -1,6 +1,7 @@
+import { formatMoney } from "@/lib/currency";
 import { ObjectId } from "mongodb";
 import { cols } from "@/lib/collections";
-import { bpsOf, formatINR } from "@/lib/money";
+import { bpsOf } from "@/lib/money";
 import { diffDays, formatIndianDate, todayIn, utcAddDays } from "@/lib/dates";
 import type { OrganizationDoc } from "@/types/models";
 import { generateForEnrollment, horizonFor } from "./scheme.service";
@@ -99,7 +100,7 @@ async function runForOrg(org: OrganizationDoc, now: Date, report: JobReport) {
       const sent = await notifyMember(org._id, i.memberId, {
         type: "installment.reminder",
         title: days === 0 ? "Hapta due today" : `Hapta due in ${days} day${days === 1 ? "" : "s"}`,
-        body: `${i.periodLabel}: ${formatINR(owed)} due on ${formatIndianDate(i.dueDate)}.`,
+        body: `${i.periodLabel}: ${formatMoney(owed, org.settings.currency)} due on ${formatIndianDate(i.dueDate)}.`,
         link: `/org/${org._id}/my`,
         dedupeKey: `due:${i._id}:${days}`,
       });
@@ -119,7 +120,7 @@ async function runForOrg(org: OrganizationDoc, now: Date, report: JobReport) {
       const sent = await notifyMember(org._id, i.memberId, {
         type: "installment.overdue",
         title: "Hapta overdue",
-        body: `${i.periodLabel}: ${formatINR(owed)} is ${late} days overdue.`,
+        body: `${i.periodLabel}: ${formatMoney(owed, org.settings.currency)} is ${late} days overdue.`,
         link: `/org/${org._id}/my`,
         dedupeKey: `overdue:${i._id}:${late}`,
       });
@@ -136,7 +137,7 @@ async function runForOrg(org: OrganizationDoc, now: Date, report: JobReport) {
       const sent = await notifyMember(org._id, l.memberId, {
         type: "loan.reminder",
         title: days === 0 ? "Loan installment due today" : `Loan installment due in ${days} day${days === 1 ? "" : "s"}`,
-        body: `${l.loanNumber} installment #${row.sequence}: ${formatINR(owed)} due on ${formatIndianDate(row.dueDate)}.`,
+        body: `${l.loanNumber} installment #${row.sequence}: ${formatMoney(owed, org.settings.currency)} due on ${formatIndianDate(row.dueDate)}.`,
         link: `/org/${org._id}/my`,
         dedupeKey: `loan-due:${l._id}:${row.sequence}:${days}`,
       });

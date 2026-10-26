@@ -1,9 +1,9 @@
+import { formatMoney } from "@/lib/currency";
 import { ObjectId } from "mongodb";
 import { z } from "zod";
 import { cols } from "@/lib/collections";
 import { audit } from "@/lib/audit";
 import { badRequest, conflict, forbidden, isDuplicateKeyError, notFound } from "@/lib/errors";
-import { formatINR } from "@/lib/money";
 import { todayIn } from "@/lib/dates";
 import type { OrgContext } from "@/lib/auth";
 import type { UpadRequestDoc } from "@/types/models";
@@ -48,7 +48,7 @@ export async function requestUpad(ctx: OrgContext, input: z.infer<typeof UpadReq
   const member = await c.members.findOne({ _id: memberId, organizationId: ctx.orgId }, { projection: { status: 1, name: 1 } });
   if (!member || member.status !== "active") throw forbidden("Only active members can request upad");
   const available = await availableCashPaise(ctx.orgId);
-  if (input.amount > available) throw badRequest(available > 0 ? `Only ${formatINR(available)} is available in the Mandal right now` : "The Mandal has no cash available for upad right now");
+  if (input.amount > available) throw badRequest(available > 0 ? `Only ${formatMoney(available, ctx.org.settings.currency)} is available in the Mandal right now` : "The Mandal has no cash available for upad right now");
   const now = new Date();
   const doc: UpadRequestDoc = {
     _id: new ObjectId(),
@@ -80,7 +80,7 @@ export async function requestUpad(ctx: OrgContext, input: z.infer<typeof UpadReq
   await notifyRoles(ctx.orgId, ["admin"], {
     type: "upadRequest.new",
     title: "Upad request",
-    body: `${member.name} asked for ${formatINR(input.amount)} upad${input.purpose ? ` — ${input.purpose}` : ""}.`,
+    body: `${member.name} asked for ${formatMoney(input.amount, ctx.org.settings.currency)} upad${input.purpose ? ` — ${input.purpose}` : ""}.`,
     link: `/org/${ctx.orgId}/fund-loans`,
     dedupeKey: `upadreq:${doc._id}`,
   });
@@ -163,6 +163,6 @@ export async function rejectUpadRequest(ctx: OrgContext, id: ObjectId, reasonTex
   const r = await c.upadRequests.updateOne({ _id: id, status: "pending" }, { $set: { status: "rejected", decisionReason: reasonText, decidedBy: ctx.user._id, decidedAt: new Date(), updatedAt: new Date() } });
   if (r.modifiedCount !== 1) throw conflict(`This request is already ${req.status}`);
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "upadRequest.reject", entityType: "upadRequest", entityId: id, reason: reasonText });
-  await notifyMember(ctx.orgId, req.memberId, { type: "upadRequest.rejected", title: "Upad request not approved", body: `Your request for ${formatINR(req.amountPaise)} was not approved: ${reasonText}`, link: `/org/${ctx.orgId}/my`, dedupeKey: `upadreq-rej:${id}` });
+  await notifyMember(ctx.orgId, req.memberId, { type: "upadRequest.rejected", title: "Upad request not approved", body: `Your request for ${formatMoney(req.amountPaise, ctx.org.settings.currency)} was not approved: ${reasonText}`, link: `/org/${ctx.orgId}/my`, dedupeKey: `upadreq-rej:${id}` });
   return { ok: true };
 }

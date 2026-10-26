@@ -1,3 +1,4 @@
+import { CURRENCY_CODES, DEFAULT_CURRENCY } from "@/lib/currency";
 import { ObjectId } from "mongodb";
 import { z } from "zod";
 import { env } from "@/config/env";
@@ -45,6 +46,8 @@ export const CreateOrgSchema = z.object({
   description: optText(500),
   ...OrgProfileFields,
   financialYearStartMonth: z.coerce.number().int().min(1).max(12).default(4),
+  /** Currency the books are kept in (ISO code). Default INR. */
+  currency: z.enum(CURRENCY_CODES).default(DEFAULT_CURRENCY),
   /** Monthly hapta per member, e.g. "500". Optional — can be set up later in Settings. */
   monthlyHaptaAmount: money().optional(),
   haptaStartMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Use YYYY-MM").optional(),
@@ -62,6 +65,7 @@ export const UpdateOrgSchema = z.object({
   settings: z
     .object({
       financialYearStartMonth: z.number().int().min(1).max(12),
+      currency: z.enum(CURRENCY_CODES),
       timezone: z.string().min(3).max(64).refine((tz) => {
         try {
           new Intl.DateTimeFormat("en-US", { timeZone: tz });
@@ -158,11 +162,12 @@ export async function createOrganization(auth: AuthContext, input: z.infer<typeo
   const now = new Date();
   const settings = defaultSettings();
   settings.financialYearStartMonth = input.financialYearStartMonth;
+  settings.currency = input.currency;
   const status = policy === "open" || auth.user.isPlatformAdmin ? "active" : "pending";
   const base = slugify(input.name);
 
   for (let attempt = 0; attempt < 5; attempt++) {
-    const { financialYearStartMonth: _fy, monthlyHaptaAmount: _a, haptaStartMonth: _m, haptaDueDay: _d, creatorIsMember: _c, endMonth: _end, ...profile } = input;
+    const { financialYearStartMonth: _fy, currency: _cur, monthlyHaptaAmount: _a, haptaStartMonth: _m, haptaDueDay: _d, creatorIsMember: _c, endMonth: _end, ...profile } = input;
     const org: OrganizationDoc = {
       _id: new ObjectId(),
       ...profile,
@@ -365,6 +370,11 @@ export async function updateOrganization(ctx: OrgContext, input: z.infer<typeof 
     if (settings.haptaTreatment && settings.haptaTreatment !== ctx.org.settings.haptaTreatment) {
       const used = await c.financialTransactions.countDocuments({ organizationId: ctx.orgId, type: "hapta_collection" });
       if (used > 0) throw badRequest("Hapta treatment can't be changed after hapta has been recorded — it would make existing balances inconsistent");
+    }
+    if (settings.currency && settings.currency !== (ctx.org.settings.currency ?? "INR")) {
+      // amounts are stored as plain numbers, so switching currency would only relabel them
+      const used = await c.financialTransactions.countDocuments({ organizationId: ctx.orgId });
+      if (used > 0) throw badRequest("The currency can't be changed after money has been recorded — amounts would not be converted");
     }
     for (const [k, v] of Object.entries(settings)) if (v !== undefined) $set[`settings.${k}`] = v;
   }

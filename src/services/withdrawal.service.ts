@@ -1,10 +1,10 @@
+import { formatMoney } from "@/lib/currency";
 import { ObjectId } from "mongodb";
 import { z } from "zod";
 import { cols } from "@/lib/collections";
 import { withTransaction } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { AppError, badRequest, conflict, forbidden, isDuplicateKeyError, notFound } from "@/lib/errors";
-import { formatINR } from "@/lib/money";
 import { todayIn } from "@/lib/dates";
 import type { OrgContext } from "@/lib/auth";
 import type { WithdrawalDoc } from "@/types/models";
@@ -52,7 +52,7 @@ export async function recordWithdrawal(ctx: OrgContext, input: z.infer<typeof Wi
   }
   if (!input.confirmDuplicate) {
     const recent = await c.withdrawals.findOne({ organizationId: ctx.orgId, memberId, amountPaise: input.amount, date: input.date, status: "paid" });
-    if (recent) throw new AppError("CONFLICT", `${formatINR(input.amount)} was already paid to ${member.name} on this date (${recent.number}). Confirm if this is a second withdrawal.`, { code: "DUPLICATE_SUSPECTED" });
+    if (recent) throw new AppError("CONFLICT", `${formatMoney(input.amount, ctx.org.settings.currency)} was already paid to ${member.name} on this date (${recent.number}). Confirm if this is a second withdrawal.`, { code: "DUPLICATE_SUSPECTED" });
   }
 
   let accountId = input.accountId;
@@ -66,7 +66,7 @@ export async function recordWithdrawal(ctx: OrgContext, input: z.infer<typeof Wi
     const w = await withTransaction(async (session) => {
       const account = await requireAccount(ctx.orgId, accountId!, session);
       const cashBal = await balanceOf(ctx.orgId, account._id, session);
-      if (cashBal < input.amount) throw badRequest(`${account.name} has only ${formatINR(cashBal)} — the Mandal can't pay out more cash than it holds`);
+      if (cashBal < input.amount) throw badRequest(`${account.name} has only ${formatMoney(cashBal, ctx.org.settings.currency)} — the Mandal can't pay out more cash than it holds`);
       const id = new ObjectId();
       const number = await fyNumber(ctx.org, "WDL", input.date, session);
       const txn = await postTransaction(
@@ -127,7 +127,7 @@ export async function recordWithdrawal(ctx: OrgContext, input: z.infer<typeof Wi
       await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "withdrawal.record", entityType: "withdrawal", entityId: id, after: { number, amountPaise: input.amount, memberId, balanceAfterPaise }, reason: input.exceptionReason }, session);
       return doc;
     });
-    await notifyMember(ctx.orgId, memberId, { type: "withdrawal.paid", title: "Withdrawal recorded", body: `${formatINR(w.amountPaise)} paid to you (${w.number}). Remaining balance ${formatINR(w.balanceAfterPaise)}.`, link: `/org/${ctx.orgId}/withdrawals/${w._id}`, dedupeKey: `wdl:${w._id}` });
+    await notifyMember(ctx.orgId, memberId, { type: "withdrawal.paid", title: "Withdrawal recorded", body: `${formatMoney(w.amountPaise, ctx.org.settings.currency)} paid to you (${w.number}). Remaining balance ${formatMoney(w.balanceAfterPaise, ctx.org.settings.currency)}.`, link: `/org/${ctx.orgId}/withdrawals/${w._id}`, dedupeKey: `wdl:${w._id}` });
     return { withdrawal: w, duplicate: false };
   } catch (e) {
     if (isDuplicateKeyError(e)) {

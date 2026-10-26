@@ -1,10 +1,10 @@
+import { formatMoney } from "@/lib/currency";
 import { ObjectId } from "mongodb";
 import { z } from "zod";
 import { cols } from "@/lib/collections";
 import { withTransaction } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { badRequest, conflict, notFound } from "@/lib/errors";
-import { formatINR } from "@/lib/money";
 import { todayIn, utcAddDays, utcAddMonths } from "@/lib/dates";
 import type { OrgContext } from "@/lib/auth";
 import type { SettlementState } from "@/types/models";
@@ -145,7 +145,7 @@ export async function settlementPreview(ctx: OrgContext) {
   if (fl.interestDuePaise > 0) blockers.push({ key: "upadInterest", label: "Upad interest still due — collect it first", amountPaise: fl.interestDuePaise, link: `${base}/fund-loans` });
   if (emiLoans) blockers.push({ key: "emiLoans", label: "EMI loans still open", count: emiLoans, link: `${base}/loans` });
   const short = rows.filter((r) => r.netPaise < 0 && !r.paidOut);
-  for (const r of short) blockers.push({ key: `short:${r.memberId}`, label: `${r.name} owes more than they have — collect ${formatINR(-r.netPaise)} first`, amountPaise: -r.netPaise, link: `${base}/members/${r.memberId}` });
+  for (const r of short) blockers.push({ key: `short:${r.memberId}`, label: `${r.name} owes more than they have — collect ${formatMoney(-r.netPaise, ctx.org.settings.currency)} first`, amountPaise: -r.netPaise, link: `${base}/members/${r.memberId}` });
 
   return {
     endMonth: ctx.org.settings.endMonth ?? null,
@@ -224,7 +224,7 @@ export async function startSettlement(ctx: OrgContext, input: z.infer<typeof Sta
           org: ctx.org,
           type: "closing_distribution",
           date,
-          description: `Closing: Mandal's own money ${gain ? "shared out" : "loss shared"} — ${formatINR(Math.abs(amount))} over ${preview.totals.totalShares} hapta shares`,
+          description: `Closing: Mandal's own money ${gain ? "shared out" : "loss shared"} — ${formatMoney(Math.abs(amount), ctx.org.settings.currency)} over ${preview.totals.totalShares} hapta shares`,
           lines: gain
             ? [{ accountKey: CLOSING_EQUITY, debitPaise: amount }, ...parts.map((r) => ({ accountKey: MEMBER_FUNDS, creditPaise: r.mandalSharePaise, memberId: r.memberId }))]
             : [{ accountKey: CLOSING_EQUITY, creditPaise: -amount }, ...parts.map((r) => ({ accountKey: MEMBER_FUNDS, debitPaise: -r.mandalSharePaise, memberId: r.memberId }))],
@@ -272,7 +272,7 @@ export async function startSettlement(ctx: OrgContext, input: z.infer<typeof Sta
     await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "settlement.start", entityType: "organization", entityId: ctx.orgId, after: dist, reason: input.note }, session);
   });
   for (const r of sharers) {
-    await notifyMember(ctx.orgId, r.memberId, { type: "settlement.started", title: "The Mandal is closing", body: `Your payout: ${formatINR(r.netPaise)} (savings ${formatINR(r.savingsPaise)}${r.mandalSharePaise ? ` + share of the Mandal's own money ${formatINR(r.mandalSharePaise)}` : ""}${r.upadOwedPaise ? ` − upad ${formatINR(r.upadOwedPaise)}` : ""}).`, link: `/org/${ctx.orgId}/my`, dedupeKey: `settle-start:${sourceId}:${r.memberId}` });
+    await notifyMember(ctx.orgId, r.memberId, { type: "settlement.started", title: "The Mandal is closing", body: `Your payout: ${formatMoney(r.netPaise, ctx.org.settings.currency)} (savings ${formatMoney(r.savingsPaise, ctx.org.settings.currency)}${r.mandalSharePaise ? ` + share of the Mandal's own money ${formatMoney(r.mandalSharePaise, ctx.org.settings.currency)}` : ""}${r.upadOwedPaise ? ` − upad ${formatMoney(r.upadOwedPaise, ctx.org.settings.currency)}` : ""}).`, link: `/org/${ctx.orgId}/my`, dedupeKey: `settle-start:${sourceId}:${r.memberId}` });
   }
   return { sharedPaise: amount, transactionId };
 }
@@ -300,11 +300,11 @@ export async function payoutMember(ctx: OrgContext, memberId: ObjectId, input: z
   if (!member) throw notFound("Member");
   const loans = await c.fundLoans.find({ organizationId: ctx.orgId, memberId, status: "active" }).toArray();
   const fl = await fundLoanTotals(ctx.org, memberId);
-  if (fl.interestDuePaise > 0) throw badRequest(`${member.name} still owes ${formatINR(fl.interestDuePaise)} upad interest — collect it first`);
+  if (fl.interestDuePaise > 0) throw badRequest(`${member.name} still owes ${formatMoney(fl.interestDuePaise, ctx.org.settings.currency)} upad interest — collect it first`);
   const upad = loans.reduce((s, l) => s + l.outstandingPaise, 0);
   const gross = member.balancePaise ?? 0;
   const net = gross - upad;
-  if (net < 0) throw badRequest(`${member.name} owes ${formatINR(-net)} more than their balance — collect it first`);
+  if (net < 0) throw badRequest(`${member.name} owes ${formatMoney(-net, ctx.org.settings.currency)} more than their balance — collect it first`);
 
   // 1) upad still owed is settled out of the payout
   for (const l of loans) {
@@ -327,7 +327,7 @@ export async function payoutMember(ctx: OrgContext, memberId: ObjectId, input: z
       memberId: memberId.toHexString(),
       amount: gross,
       date,
-      note: `Closing payout${upad ? ` (upad ${formatINR(upad)} settled from it — paid ${formatINR(net)})` : ""}${input.reference ? ` · ref ${input.reference}` : ""}`,
+      note: `Closing payout${upad ? ` (upad ${formatMoney(upad, ctx.org.settings.currency)} settled from it — paid ${formatMoney(net, ctx.org.settings.currency)})` : ""}${input.reference ? ` · ref ${input.reference}` : ""}`,
       accountId: input.accountId,
       allowExceedBalance: false,
       exceptionReason: undefined,
@@ -340,7 +340,7 @@ export async function payoutMember(ctx: OrgContext, memberId: ObjectId, input: z
   const r = await c.organizations.updateOne({ _id: ctx.orgId, "settings.settlement.payouts.memberId": { $ne: memberId } }, { $push: { "settings.settlement.payouts": payout }, $set: { updatedAt: new Date() } });
   if (r.modifiedCount !== 1) throw conflict("This member has already been paid out");
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "settlement.payout", entityType: "member", entityId: memberId, after: { ...payout, method: input.method } });
-  await notifyMember(ctx.orgId, memberId, { type: "settlement.paid", title: "Closing payout", body: `${formatINR(net)} paid to you${upad ? ` (after upad ${formatINR(upad)})` : ""}. Thank you for being part of ${ctx.org.name}.`, link: `/org/${ctx.orgId}/my`, dedupeKey: `settle-paid:${memberId}` });
+  await notifyMember(ctx.orgId, memberId, { type: "settlement.paid", title: "Closing payout", body: `${formatMoney(net, ctx.org.settings.currency)} paid to you${upad ? ` (after upad ${formatMoney(upad, ctx.org.settings.currency)})` : ""}. Thank you for being part of ${ctx.org.name}.`, link: `/org/${ctx.orgId}/my`, dedupeKey: `settle-paid:${memberId}` });
   return { ok: true, netPaise: net, grossPaise: gross, upadSettledPaise: upad, withdrawalId };
 }
 
@@ -355,9 +355,9 @@ export async function closeMandal(ctx: OrgContext, input: z.infer<typeof CloseSc
   if (!p.state) throw badRequest("Start closing first");
   if (!p.canClose) {
     const left = [
-      p.totals.memberFundsPaise !== 0 ? `${formatINR(p.totals.memberFundsPaise)} still in members' balances — pay everyone out` : "",
-      p.totals.upadOutstandingPaise !== 0 ? `${formatINR(p.totals.upadOutstandingPaise)} upad still out` : "",
-      p.totals.cashPaise !== 0 ? `${formatINR(p.totals.cashPaise)} still in the Mandal's accounts — share it out again or record where it went` : "",
+      p.totals.memberFundsPaise !== 0 ? `${formatMoney(p.totals.memberFundsPaise, ctx.org.settings.currency)} still in members' balances — pay everyone out` : "",
+      p.totals.upadOutstandingPaise !== 0 ? `${formatMoney(p.totals.upadOutstandingPaise, ctx.org.settings.currency)} upad still out` : "",
+      p.totals.cashPaise !== 0 ? `${formatMoney(p.totals.cashPaise, ctx.org.settings.currency)} still in the Mandal's accounts — share it out again or record where it went` : "",
       ...p.blockers.map((b) => b.label),
     ].filter(Boolean);
     throw badRequest(`Not ready to close: ${left.join("; ")}`);

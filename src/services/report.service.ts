@@ -1,3 +1,4 @@
+import { currencySymbol } from "@/lib/currency";
 import { ObjectId } from "mongodb";
 import { z } from "zod";
 import { cols } from "@/lib/collections";
@@ -829,7 +830,14 @@ export async function eventReport(ctx: OrgContext, q: ReportParams) {
 const r = paiseToRupeeString;
 const dd = (d: unknown) => (d instanceof Date ? d.toISOString().slice(0, 10) : (d as string));
 
-export function toTable(kind: string, data: Record<string, unknown>): { headers: string[]; rows: unknown[][] } {
+/** CSV table for a report; money columns are labelled with the Mandal's currency, e.g. "Amount (₹)" / "Amount ($)". */
+export function toTable(kind: string, data: Record<string, unknown>, currency?: string): { headers: string[]; rows: unknown[][] } {
+  const t = toTableINR(kind, data);
+  const sym = currencySymbol(currency);
+  return sym === "₹" ? t : { ...t, headers: t.headers.map((h) => h.replace("(₹)", `(${sym})`)) };
+}
+
+function toTableINR(kind: string, data: Record<string, unknown>): { headers: string[]; rows: unknown[][] } {
   /* eslint-disable @typescript-eslint/no-explicit-any */
   const d = data as any;
   switch (kind) {

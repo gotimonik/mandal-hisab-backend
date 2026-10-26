@@ -1,10 +1,10 @@
+import { formatMoney } from "@/lib/currency";
 import { ObjectId } from "mongodb";
 import { z } from "zod";
 import { cols } from "@/lib/collections";
 import { withTransaction } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { badRequest, isDuplicateKeyError } from "@/lib/errors";
-import { formatINR } from "@/lib/money";
 import { financialYear, todayIn } from "@/lib/dates";
 import type { OrgContext } from "@/lib/auth";
 import type { TransactionType } from "@/types/models";
@@ -156,7 +156,7 @@ export async function recordCashEntry(ctx: OrgContext, input: z.infer<typeof Cas
       const fa = await requireAccount(ctx.orgId, accountId!, session);
       if (input.direction === "out") {
         const bal = await balanceOf(ctx.orgId, fa._id, session);
-        if (bal < input.amount) throw badRequest(`${fa.name} has only ${formatINR(bal)}`);
+        if (bal < input.amount) throw badRequest(`${fa.name} has only ${formatMoney(bal, ctx.org.settings.currency)}`);
       }
       const txn = await postTransaction(
         {

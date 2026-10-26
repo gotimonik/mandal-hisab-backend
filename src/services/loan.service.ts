@@ -1,10 +1,11 @@
+import { formatMoney } from "@/lib/currency";
 import { ObjectId } from "mongodb";
 import { z } from "zod";
 import { cols } from "@/lib/collections";
 import { withTransaction } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { badRequest, conflict, forbidden, isDuplicateKeyError, notFound } from "@/lib/errors";
-import { formatINR, roundHalfUp } from "@/lib/money";
+import { roundHalfUp } from "@/lib/money";
 import { diffDays, todayIn, utcAddDays } from "@/lib/dates";
 import type { OrgContext } from "@/lib/auth";
 import type { InterestCalculationDoc, LoanDoc, LoanRepaymentDoc, LoanScheduleRow } from "@/types/models";
@@ -263,7 +264,7 @@ export async function approveLoan(ctx: OrgContext, id: ObjectId, input: z.infer<
   const r = await c.loans.updateOne({ _id: id, organizationId: ctx.orgId, status: "applied" }, { $set });
   if (r.modifiedCount !== 1) throw conflict("Loan changed, please reload");
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "loan.approve", entityType: "loan", entityId: id, before: { requestedPaise: l.requestedPaise, annualRate: l.annualRate }, after: $set });
-  await notifyMember(ctx.orgId, l.memberId, { type: "loan.approved", title: "Loan approved", body: `Your loan ${l.loanNumber} of ${formatINR(input.approvedAmount)} has been approved.`, link: `/org/${ctx.orgId}/my`, dedupeKey: `loan-approved:${id}` });
+  await notifyMember(ctx.orgId, l.memberId, { type: "loan.approved", title: "Loan approved", body: `Your loan ${l.loanNumber} of ${formatMoney(input.approvedAmount, ctx.org.settings.currency)} has been approved.`, link: `/org/${ctx.orgId}/my`, dedupeKey: `loan-approved:${id}` });
   return getLoan(ctx, id);
 }
 
@@ -289,7 +290,7 @@ export async function disburseLoan(ctx: OrgContext, id: ObjectId, input: z.infer
   await withTransaction(async (session) => {
     const account = await requireAccount(ctx.orgId, input.accountId, session);
     const bal = await balanceOf(ctx.orgId, account._id, session);
-    if (bal < principal) throw badRequest(`Insufficient balance in ${account.name} (${formatINR(bal)})`);
+    if (bal < principal) throw badRequest(`Insufficient balance in ${account.name} (${formatMoney(bal, ctx.org.settings.currency)})`);
     const claimed = await c.loans.updateOne({ _id: id, status: "approved" }, { $set: { status: "active" } }, { session });
     if (claimed.modifiedCount !== 1) throw conflict("Loan was already disbursed");
     const txn = await postTransaction(
@@ -540,7 +541,7 @@ export function closureQuote(l: LoanDoc, date: Date): ClosureQuote {
  * 2. Remainder → either advance payment of upcoming rows, or principal prepayment (reschedules)
  * 3. closeLoan: amount must equal the closure quote; future interest is waived.
  */
-export function allocateRepayment(l: LoanDoc, amount: number, date: Date, opts: { prepayment: boolean; closeLoan: boolean }): AllocationResult {
+export function allocateRepayment(l: LoanDoc, amount: number, date: Date, opts: { prepayment: boolean; closeLoan: boolean; currency?: string }): AllocationResult {
   if (l.status !== "active") throw badRequest("Repayments can only be recorded on active loans");
   const rows: LoanScheduleRow[] = structuredClone(l.schedule);
   const allocs = new Map<number, { sequence: number; principalPaise: number; interestPaise: number; penaltyPaise: number }>();
@@ -559,7 +560,7 @@ export function allocateRepayment(l: LoanDoc, amount: number, date: Date, opts: 
 
   if (opts.closeLoan) {
     quote = closureQuote(l, date);
-    if (amount !== quote.totalPaise) throw badRequest(`Closure amount must be exactly ${formatINR(quote.totalPaise)}`);
+    if (amount !== quote.totalPaise) throw badRequest(`Closure amount must be exactly ${formatMoney(quote.totalPaise, opts.currency)}`);
     for (const r of rows.filter((x) => x.status !== "waived")) {
       if (r.dueDate <= date) {
         const { a, left: l2 } = payRow(r, ["penalty", "interest", "principal"], left);
@@ -648,9 +649,9 @@ export async function repayLoan(ctx: OrgContext, id: ObjectId, input: z.infer<ty
   const existing = await c.loanRepayments.findOne({ organizationId: ctx.orgId, idempotencyKey: input.idempotencyKey });
   if (existing) return { repayment: existing, duplicate: true };
   const l0 = await getLoanDoc(ctx, id);
-  const preview = allocateRepayment(l0, input.amount, input.date, input);
+  const preview = allocateRepayment(l0, input.amount, input.date, { ...input, currency: ctx.org.settings.currency });
   if (preview.unappliedPaise > 0) {
-    throw badRequest(`Amount exceeds everything owed on this loan by ${formatINR(preview.unappliedPaise)}`);
+    throw badRequest(`Amount exceeds everything owed on this loan by ${formatMoney(preview.unappliedPaise, ctx.org.settings.currency)}`);
   }
   if (input.dryRun) return { preview, duplicate: false };
   if (l0.disbursedOn && input.date < l0.disbursedOn) throw badRequest("Repayment date is before disbursement");
@@ -659,7 +660,7 @@ export async function repayLoan(ctx: OrgContext, id: ObjectId, input: z.infer<ty
     return await withTransaction(async (session) => {
       const l = await c.loans.findOne({ _id: id, organizationId: ctx.orgId }, { session });
       if (!l) throw notFound("Loan");
-      const res = allocateRepayment(l, input.amount, input.date, input); // recompute against fresh state
+      const res = allocateRepayment(l, input.amount, input.date, { ...input, currency: ctx.org.settings.currency }); // recompute against fresh state
       const account = await requireAccount(ctx.orgId, input.accountId, session);
       const now = new Date();
       const upd = await c.loans.updateOne(

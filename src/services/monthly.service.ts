@@ -1,9 +1,9 @@
+import { formatMoney } from "@/lib/currency";
 import { ObjectId } from "mongodb";
 import { z } from "zod";
 import { cols } from "@/lib/collections";
 import { audit } from "@/lib/audit";
 import { AppError, badRequest, notFound } from "@/lib/errors";
-import { formatINR } from "@/lib/money";
 import { parseDateOnly, todayIn, utcAddDays, utcAddMonths } from "@/lib/dates";
 import type { OrgContext } from "@/lib/auth";
 import type { HaptaSchemeDoc } from "@/types/models";
@@ -53,7 +53,7 @@ export async function setupMonthlyHapta(ctx: OrgContext, input: z.infer<typeof S
   const startDate = firstOfMonth(input.startMonth);
   const scheme = await createScheme(ctx, {
     name: "Monthly hapta",
-    description: `${formatINR(input.amount)} per member every month`,
+    description: `${formatMoney(input.amount, ctx.org.settings.currency)} per member every month`,
     startDate,
     endDate: null,
     frequency: "monthly",
@@ -94,10 +94,10 @@ export async function changeMonthlyHapta(ctx: OrgContext, input: z.infer<typeof 
   const current = monthOf(today);
   const effective = input.effectiveMonth ?? monthOf(utcAddMonths(firstOfMonth(current), 1));
   if (effective < current) throw badRequest("The new amount can only apply from the current month onwards");
-  const r = await reviseAmount(ctx, s._id, { effectiveFrom: firstOfMonth(effective), amount: input.amount, reason: input.reason ?? `Monthly hapta changed to ${formatINR(input.amount)}` });
+  const r = await reviseAmount(ctx, s._id, { effectiveFrom: firstOfMonth(effective), amount: input.amount, reason: input.reason ?? `Monthly hapta changed to ${formatMoney(input.amount, ctx.org.settings.currency)}` });
   const c = await cols();
   await c.organizations.updateOne({ _id: ctx.orgId }, { $set: { "settings.monthlyHapta.amountPaise": input.amount, updatedAt: new Date() } });
-  await c.haptaSchemes.updateOne({ _id: s._id }, { $set: { description: `${formatINR(input.amount)} per member every month (from ${effective})` } });
+  await c.haptaSchemes.updateOne({ _id: s._id }, { $set: { description: `${formatMoney(input.amount, ctx.org.settings.currency)} per member every month (from ${effective})` } });
   return { effectiveMonth: effective, installmentsUpdated: r.installmentsUpdated };
 }
 
@@ -283,7 +283,7 @@ export async function quickCollect(ctx: OrgContext, input: z.infer<typeof QuickC
   if (inst.state !== "active" && !retry) throw badRequest(`This installment is ${inst.state}`);
   const outstanding = inst.amountPaise + inst.penaltyPaise - inst.paidPaise - inst.penaltyPaidPaise;
   if (!retry && outstanding <= 0) throw badRequest("This month is already fully paid");
-  if (!retry && input.amount > outstanding) throw badRequest(`Amount is more than the outstanding ${formatINR(outstanding)} for ${inst.periodLabel}`);
+  if (!retry && input.amount > outstanding) throw badRequest(`Amount is more than the outstanding ${formatMoney(outstanding, ctx.org.settings.currency)} for ${inst.periodLabel}`);
 
   if (!input.confirmDuplicate && !retry) {
     const same = await c.payments.findOne({
@@ -294,7 +294,7 @@ export async function quickCollect(ctx: OrgContext, input: z.infer<typeof QuickC
       "allocations.installmentId": inst._id,
       idempotencyKey: { $ne: input.idempotencyKey },
     });
-    if (same) throw new AppError("CONFLICT", `A payment of ${formatINR(input.amount)} on this date is already recorded for this month. Confirm if this is a second payment.`, { code: "DUPLICATE_SUSPECTED" });
+    if (same) throw new AppError("CONFLICT", `A payment of ${formatMoney(input.amount, ctx.org.settings.currency)} on this date is already recorded for this month. Confirm if this is a second payment.`, { code: "DUPLICATE_SUSPECTED" });
   }
 
   let accountId = input.accountId;

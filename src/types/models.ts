@@ -86,7 +86,8 @@ export interface ExpenseCategory {
 
 export interface OrganizationSettings {
   financialYearStartMonth: number; // 1-12 (India: 4 = April)
-  currency: "INR";
+  /** ISO 4217 code (2-decimal currencies only, see lib/currency.ts). Default INR. */
+  currency: string;
   timezone: string; // IANA, default Asia/Kolkata
   receiptPrefix: string;
   requirePaymentVerification: boolean; // payments recorded by managers stay pending until verified
