@@ -302,6 +302,34 @@ describe("'I have paid' with a purpose", () => {
     expect((await ok(api("GET", `/orgs/${o.orgId}/fund-loans/${loanId}`, { token: o.admin.token }))).loan.outstandingPaise).toBe(80_000);
   });
 
+  it("if the admin records the reported money with Receive, the member's claim closes itself", async () => {
+    const c3 = await ok(api("POST", `/orgs/${o.orgId}/me/upad-payments`, { token: mem.token, body: { loanId, principalAmount: "100", date: "2026-10-22", method: "upi", idempotencyKey: uniq("uc") } }));
+    const r = await ok(pay(o, loanId, { principalAmount: "100", date: "2026-10-22" }));
+    expect(r.settledClaimId).toBe(c3.claim._id);
+    expect(await ok<any[]>(api("GET", `/orgs/${o.orgId}/upad-payments`, { token: o.admin.token }))).toHaveLength(0);
+    expect((await ok(api("GET", `/orgs/${o.orgId}/fund-loans/${loanId}`, { token: o.admin.token }))).loan.outstandingPaise).toBe(70_000); // counted once
+    const mine = await ok<any[]>(api("GET", `/orgs/${o.orgId}/me/upad-payments`, { token: mem.token }));
+    expect(mine.find((x) => x._id === c3.claim._id)).toMatchObject({ status: "verified", paymentId: r.payment._id });
+  });
+
+  it("a claim already covered by a different Receive is flagged; Verify refuses, 'Already recorded' closes it", async () => {
+    const c4 = await ok(api("POST", `/orgs/${o.orgId}/me/upad-payments`, { token: mem.token, body: { loanId, principalAmount: "50", date: "2026-10-23", method: "cash", idempotencyKey: uniq("uc") } }));
+    const r = await ok(pay(o, loanId, { principalAmount: "60", date: "2026-10-23" }));
+    expect(r.settledClaimId).toBeNull(); // amounts differ: not closed automatically
+    const [listed] = await ok<any[]>(api("GET", `/orgs/${o.orgId}/upad-payments`, { token: o.admin.token }));
+    expect(listed.alreadyRecorded).toMatchObject({ paymentId: r.payment._id, principalPaise: 6_000 });
+    const v = await api("POST", `/orgs/${o.orgId}/upad-payments/${c4.claim._id}/verify`, { token: o.admin.token, body: {} });
+    expect(v.status).toBe(409);
+    expect(JSON.stringify(v)).toContain("Already recorded");
+    await ok(api("POST", `/orgs/${o.orgId}/upad-payments/${c4.claim._id}/settle`, { token: o.admin.token }));
+    expect((await ok(api("GET", `/orgs/${o.orgId}/fund-loans/${loanId}`, { token: o.admin.token }))).loan.outstandingPaise).toBe(64_000);
+    expect(await ok<any[]>(api("GET", `/orgs/${o.orgId}/upad-payments`, { token: o.admin.token }))).toHaveLength(0);
+    // a claim with no covering payment can't be settled
+    const c5 = await ok(api("POST", `/orgs/${o.orgId}/me/upad-payments`, { token: mem.token, body: { loanId, principalAmount: "10", date: "2026-10-24", method: "cash", idempotencyKey: uniq("uc") } }));
+    expect((await api("POST", `/orgs/${o.orgId}/upad-payments/${c5.claim._id}/settle`, { token: o.admin.token })).status).toBe(400);
+    await ok(api("POST", `/orgs/${o.orgId}/upad-payments/${c5.claim._id}/reject`, { token: o.admin.token, body: { reason: "Test" } }));
+  });
+
   it("'Other' payments need a note and don't touch hapta", async () => {
     const send = (body: Record<string, unknown>) => api("POST", `/orgs/${o.orgId}/me/payment-requests`, { token: mem.token, body: { purpose: "other", amount: "251", date: "2026-10-20", method: "cash", idempotencyKey: uniq("pr"), ...body } });
     expect((await send({})).status).toBe(400);

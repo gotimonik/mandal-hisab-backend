@@ -6,7 +6,7 @@ import { badRequest, conflict, forbidden, isDuplicateKeyError, notFound } from "
 import { formatINR } from "@/lib/money";
 import { todayIn } from "@/lib/dates";
 import type { OrgContext } from "@/lib/auth";
-import type { UpadPaymentClaimDoc } from "@/types/models";
+import type { FundLoanPaymentDoc, UpadPaymentClaimDoc } from "@/types/models";
 import { dateOnly, idempotencyKey, money, optText } from "@/validators/common";
 import { listFundLoans, receiveFundLoanPayment } from "./fund-loan.service";
 import { lastOfMonth, monthOf } from "./monthly.service";
@@ -132,19 +132,96 @@ export async function myUpadClaims(ctx: OrgContext) {
   return items.map((i) => ({ ...i, loanNumber: loans.find((l) => l._id.equals(i.loanId))?.number ?? "" }));
 }
 
+/**
+ * A payment the admin already recorded directly ("Receive") that covers this claim: same upad,
+ * recorded after the member reported it, at least the same interest and upad amounts, and not
+ * already used for another claim.
+ */
+function findCoveringPayment(claim: UpadPaymentClaimDoc, payments: FundLoanPaymentDoc[], usedIds: Set<string>) {
+  return payments.find(
+    (p) =>
+      p.loanId.equals(claim.loanId) &&
+      p.status === "valid" &&
+      p.createdAt >= claim.createdAt &&
+      p.interestPaise >= claim.interestPaise &&
+      p.principalPaise >= claim.principalPaise &&
+      !usedIds.has(p._id.toHexString()),
+  );
+}
+
 export async function listUpadClaims(ctx: OrgContext, status: "pending" | "all" = "pending") {
   const c = await cols();
   const filter: Record<string, unknown> = { organizationId: ctx.orgId };
   if (status !== "all") filter.status = status;
   const items = await c.upadPaymentClaims.find(filter).sort({ createdAt: -1 }).limit(200).toArray();
-  const [members, loans] = await Promise.all([
+  const pendingLoanIds = items.filter((i) => i.status === "pending").map((i) => i.loanId);
+  const [members, loans, payments, used] = await Promise.all([
     c.members.find({ _id: { $in: items.map((i) => i.memberId) } }, { projection: { name: 1, membershipNumber: 1 } }).toArray(),
     c.fundLoans.find({ _id: { $in: items.map((i) => i.loanId) } }, { projection: { number: 1, outstandingPaise: 1 } }).toArray(),
+    pendingLoanIds.length ? c.fundLoanPayments.find({ organizationId: ctx.orgId, loanId: { $in: pendingLoanIds }, status: "valid" }).sort({ createdAt: 1 }).toArray() : Promise.resolve([] as FundLoanPaymentDoc[]),
+    pendingLoanIds.length ? c.upadPaymentClaims.find({ organizationId: ctx.orgId, loanId: { $in: pendingLoanIds }, paymentId: { $ne: null } }, { projection: { paymentId: 1 } }).toArray() : Promise.resolve([]),
   ]);
-  return items.map((i) => ({ ...i, member: members.find((m) => m._id.equals(i.memberId)) ?? null, loanNumber: loans.find((l) => l._id.equals(i.loanId))?.number ?? "" }));
+  const usedIds = new Set(used.map((u) => u.paymentId!.toHexString()));
+  return items.map((i) => {
+    const cover = i.status === "pending" ? findCoveringPayment(i, payments, usedIds) : undefined;
+    return {
+      ...i,
+      member: members.find((m) => m._id.equals(i.memberId)) ?? null,
+      loanNumber: loans.find((l) => l._id.equals(i.loanId))?.number ?? "",
+      /** the admin already recorded this money with "Receive" — settle instead of verifying again */
+      alreadyRecorded: cover ? { paymentId: cover._id, date: cover.date, interestPaise: cover.interestPaise, principalPaise: cover.principalPaise, receiptId: cover.receiptId } : null,
+    };
+  });
 }
 
-export const VerifyClaimSchema = z.object({ accountId: z.string().optional() });
+/**
+ * The member reported a payment that the admin had already recorded directly: close the claim
+ * against that payment (no second payment, no double interest share) and tell the member.
+ */
+export async function settleUpadClaim(ctx: OrgContext, id: ObjectId, paymentIdHint?: ObjectId) {
+  const c = await cols();
+  const claim = await c.upadPaymentClaims.findOne({ _id: id, organizationId: ctx.orgId });
+  if (!claim) throw notFound("Payment");
+  if (claim.status !== "pending") throw conflict(`This payment is already ${claim.status}`);
+  const [payments, used] = await Promise.all([
+    c.fundLoanPayments.find({ organizationId: ctx.orgId, loanId: claim.loanId, status: "valid", ...(paymentIdHint ? { _id: paymentIdHint } : {}) }).sort({ createdAt: 1 }).toArray(),
+    c.upadPaymentClaims.find({ organizationId: ctx.orgId, loanId: claim.loanId, paymentId: { $ne: null } }, { projection: { paymentId: 1 } }).toArray(),
+  ]);
+  const payment = findCoveringPayment(claim, payments, new Set(used.map((u) => u.paymentId!.toHexString())));
+  if (!payment) throw badRequest("No recorded payment on this upad covers it. Verify it to record the money, or reject it.");
+  const r = await c.upadPaymentClaims.updateOne(
+    { _id: id, status: "pending" },
+    { $set: { status: "verified", paymentId: payment._id, decidedBy: ctx.user._id, decidedAt: new Date(), updatedAt: new Date() } },
+  );
+  if (r.modifiedCount !== 1) throw conflict("This payment was just changed — refresh and try again");
+  await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "upadClaim.settle", entityType: "upadPaymentClaim", entityId: id, after: { paymentId: payment._id } });
+  await notifyMember(ctx.orgId, claim.memberId, { type: "upadClaim.verified", title: "Upad payment verified", body: `Your payment of ${formatINR(claim.interestPaise + claim.principalPaise)} was received by the Mandal. Receipt issued.`, link: `/org/${ctx.orgId}/receipts/${payment.receiptId}`, dedupeKey: `upadclaim-ok:${id}` });
+  return { ok: true, paymentId: payment._id, receiptId: payment.receiptId };
+}
+
+/** After an admin records money with "Receive": close a pending claim for exactly that amount. */
+export async function settleMatchingClaim(ctx: OrgContext, payment: FundLoanPaymentDoc) {
+  const c = await cols();
+  const claim = await c.upadPaymentClaims.findOne(
+    { organizationId: ctx.orgId, loanId: payment.loanId, status: "pending", interestPaise: payment.interestPaise, principalPaise: payment.principalPaise, createdAt: { $lte: payment.createdAt } },
+    { sort: { createdAt: 1 } },
+  );
+  if (!claim) return null;
+  try {
+    await settleUpadClaim(ctx, claim._id, payment._id);
+    return claim._id;
+  } catch {
+    return null;
+  }
+}
+
+const ALREADY_RECORDED = 'This money was already recorded with Receive — use "Already recorded" to close it without counting it twice.';
+
+export const VerifyClaimSchema = z.object({
+  accountId: z.string().optional(),
+  /** record it even though a matching payment was already recorded with Receive (two separate payments) */
+  recordAgain: z.boolean().default(false),
+});
 
 /** Verify → records the upad payment exactly as "Receive" would (receipt, interest shared among members). */
 export async function verifyUpadClaim(ctx: OrgContext, id: ObjectId, input: z.infer<typeof VerifyClaimSchema>) {
@@ -152,6 +229,10 @@ export async function verifyUpadClaim(ctx: OrgContext, id: ObjectId, input: z.in
   const claim = await c.upadPaymentClaims.findOne({ _id: id, organizationId: ctx.orgId });
   if (!claim) throw notFound("Payment");
   if (claim.status !== "pending") throw conflict(`This payment is already ${claim.status}`);
+  if (!input.recordAgain) {
+    const [listed] = (await listUpadClaims(ctx, "pending")).filter((x) => x._id.equals(id));
+    if (listed?.alreadyRecorded) throw conflict(ALREADY_RECORDED);
+  }
   const claimed = await c.upadPaymentClaims.updateOne({ _id: id, status: "pending" }, { $set: { status: "verified", decidedBy: ctx.user._id, decidedAt: new Date(), updatedAt: new Date() } });
   if (claimed.modifiedCount !== 1) throw conflict("This payment was just changed — refresh and try again");
   try {

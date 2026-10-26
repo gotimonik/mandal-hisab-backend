@@ -106,7 +106,13 @@ export function registerSavingsRoutes(r: Router) {
     const restrict = ctx.can("members.view") ? undefined : (ctx.membership.memberId ?? null);
     return fl.getFundLoan(ctx, parseObjectId(req.params.id, "Upad"), restrict);
   });
-  r.post("/orgs/:orgId/fund-loans/:id/payments", async (req) => fl.receiveFundLoanPayment(await req.org("payments.record", W), parseObjectId(req.params.id, "Upad"), await req.body(fl.LoanPaymentSchema)));
+  r.post("/orgs/:orgId/fund-loans/:id/payments", async (req) => {
+    const ctx = await req.org("payments.record", W);
+    const res = await fl.receiveFundLoanPayment(ctx, parseObjectId(req.params.id, "Upad"), await req.body(fl.LoanPaymentSchema));
+    // the member may have reported this same payment: close their claim so it isn't verified twice
+    const settledClaimId = res.duplicate ? null : await mp.settleMatchingClaim(ctx, res.payment);
+    return { ...res, settledClaimId };
+  });
   r.post("/orgs/:orgId/fund-loans/:id/cancel", async (req) => {
     const b = await req.body(z.object({ reason }));
     return fl.cancelFundLoan(await req.org("transactions.adjust", W), parseObjectId(req.params.id, "Upad"), b.reason);
@@ -130,6 +136,7 @@ export function registerSavingsRoutes(r: Router) {
   r.get("/orgs/:orgId/me/upad-payments", async (req) => mp.myUpadClaims(await req.org("self.view")));
   r.post("/orgs/:orgId/me/upad-payments", async (req) => mp.submitUpadClaim(await req.org("self.submitPayment", W), await req.body(mp.UpadClaimSchema)));
   r.get("/orgs/:orgId/upad-payments", async (req) => mp.listUpadClaims(await req.org("payments.view"), req.query.get("status") === "all" ? "all" : "pending"));
+  r.post("/orgs/:orgId/upad-payments/:id/settle", async (req) => mp.settleUpadClaim(await req.org("payments.verify", W), parseObjectId(req.params.id, "Payment")));
   r.post("/orgs/:orgId/upad-payments/:id/verify", async (req) => mp.verifyUpadClaim(await req.org("payments.verify", W), parseObjectId(req.params.id, "Payment"), await req.body(mp.VerifyClaimSchema)));
   r.post("/orgs/:orgId/upad-payments/:id/reject", async (req) => {
     const b = await req.body(z.object({ reason }));
