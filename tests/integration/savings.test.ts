@@ -298,6 +298,10 @@ describe("Parivar Mandal (₹500/month)", () => {
       const d = await ok(api("GET", `/orgs/${o.orgId}/dashboard`, { token: o.admin.token }));
       const rec = await reconcile(o);
       expect(d.totals.totalMemberBalancesPaise).toBe(rec.generalLedgerPaise);
+      // the breakdown shown under "Total member balances" always adds up to it, withdrawals taken off
+      const parts = d.totals.memberBalanceParts;
+      expect(parts.withdrawalsPaise).toBeGreaterThan(0);
+      expect(parts.openingPaise + parts.haptaPaise + parts.interestPaise - parts.withdrawalsPaise + parts.otherPaise).toBe(d.totals.totalMemberBalancesPaise);
       expect(d.totals.mandalCashPaise).toBe(await cashBal(o));
       expect(d.recentWithdrawals.length).toBeGreaterThan(0);
       const rpt = await ok(api("GET", `/orgs/${o.orgId}/monthly-report?month=${AUG}`, { token: o.admin.token }));

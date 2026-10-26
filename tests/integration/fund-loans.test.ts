@@ -88,6 +88,8 @@ describe("loans from the Mandal fund", () => {
     expect(d.totals.fundLoansOutstandingPaise).toBe(300_000);
     expect(d.totals.mandalFundPaise).toBe(530_000);
     expect(d.totals.totalMemberBalancesPaise).toBe(530_000);
+    // upad interest shared to members shows as interest in the balance breakdown
+    expect(d.totals.memberBalanceParts).toMatchObject({ haptaPaise: 500_000, interestPaise: 30_000, withdrawalsPaise: 0 });
     expect((await ok(api("GET", `/orgs/${o.orgId}/member-funds/reconcile`, { token: o.admin.token }))).reconciled).toBe(true);
     const aug = await ok(api("GET", `/orgs/${o.orgId}/fund-loans/month?month=2026-08`, { token: o.admin.token }));
     expect(aug.rows[0]).toMatchObject({ status: "paid", totalDuePaise: 0 });

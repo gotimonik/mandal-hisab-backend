@@ -169,10 +169,19 @@ export async function adminDashboard(ctx: OrgContext) {
     .toArray();
   const curMonth = today.toISOString().slice(0, 7);
   const iaP = c.memberLedger
-    .aggregate<{ m: number; f: number }>([
-      // by date credited: covers monthly interest runs and shares of interest paid on fund loans
-      { $match: { organizationId: orgId, kind: "interest", date: { $gte: fy.start } } },
-      { $group: { _id: null, m: { $sum: { $cond: [{ $gte: ["$date", parseDateOnly(`${curMonth}-01`)] }, { $subtract: ["$creditPaise", "$debitPaise"] }, 0] } }, f: { $sum: { $subtract: ["$creditPaise", "$debitPaise"] } } } },
+    .aggregate<{ interest: { m: number; f: number }[]; byKind: { _id: string; v: number }[] }>([
+      { $match: { organizationId: orgId } },
+      {
+        $facet: {
+          // by date credited: covers monthly interest runs and shares of interest paid on fund loans
+          interest: [
+            { $match: { kind: "interest", date: { $gte: fy.start } } },
+            { $group: { _id: null, m: { $sum: { $cond: [{ $gte: ["$date", parseDateOnly(`${curMonth}-01`)] }, { $subtract: ["$creditPaise", "$debitPaise"] }, 0] } }, f: { $sum: { $subtract: ["$creditPaise", "$debitPaise"] } } } },
+          ],
+          // what makes up the total member balances (all time)
+          byKind: [{ $group: { _id: "$kind", v: { $sum: { $subtract: ["$creditPaise", "$debitPaise"] } } } }],
+        },
+      },
     ])
     .toArray();
 
@@ -209,7 +218,16 @@ export async function adminDashboard(ctx: OrgContext) {
     ]),
   ]);
   const monthHapta = { expected: mh?.e ?? 0, collected: mh?.p ?? 0, outstanding: mh?.o ?? 0 };
-  const interest = { month: ia?.m ?? 0, fy: ia?.f ?? 0 };
+  const interest = { month: ia?.interest[0]?.m ?? 0, fy: ia?.interest[0]?.f ?? 0 };
+  const kindTotal = (k: string) => ia?.byKind.find((x) => x._id === k)?.v ?? 0;
+  const balanceParts = {
+    openingPaise: kindTotal("opening"),
+    haptaPaise: kindTotal("hapta"),
+    interestPaise: kindTotal("interest"),
+    withdrawalsPaise: -kindTotal("withdrawal"),
+    // anything else (adjustments, reversals of other kinds) so the parts always add up
+    otherPaise: (ia?.byKind ?? []).filter((x) => !["opening", "hapta", "interest", "withdrawal"].includes(x._id)).reduce((s, x) => s + x.v, 0),
+  };
 
   // Overdue respects each scheme's grace days.
   const graceMax = Math.max(0, ...schemes.map((s) => s.graceDays));
@@ -261,6 +279,8 @@ export async function adminDashboard(ctx: OrgContext) {
       monthHaptaCashPaise: cashIn(ledgerFacet.cashMonth, ["hapta_collection"]),
       monthWithdrawalsPaise: -cashIn(ledgerFacet.cashMonth, ["withdrawal"]),
       totalMemberBalancesPaise: byKey(ledgerFacet.allTime, "liability:member_funds"),
+      /** opening + hapta + interest − withdrawals (+ other adjustments) = total member balances */
+      memberBalanceParts: balanceParts,
       mandalCashPaise: accounts.reduce((s, a) => s + byKey(ledgerFacet.allTime, faKey(a._id)), 0),
       mandalSurplusPaise: accounts.reduce((s, a) => s + byKey(ledgerFacet.allTime, faKey(a._id)), 0) + byKey(ledgerFacet.allTime, "asset:loans_receivable") + byKey(ledgerFacet.allTime, FUND_LOANS) - byKey(ledgerFacet.allTime, "liability:member_funds"),
       fundLoansOutstandingPaise: fundLoans.outstandingPaise,
