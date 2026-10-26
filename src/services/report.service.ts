@@ -195,7 +195,7 @@ export async function adminDashboard(ctx: OrgContext) {
     fundLoans,
     totalMembers,
     wd,
-    [activeMembers, pendingPayments, pendingExpenses, pendingMemberships, accounts, recent, pendingUpadRequests, pendingUpadPayments],
+    [activeAgg, pendingPayments, pendingExpenses, pendingMemberships, accounts, recent, pendingUpadRequests, pendingUpadPayments],
   ] = await Promise.all([
     ledgerP,
     instP,
@@ -207,7 +207,10 @@ export async function adminDashboard(ctx: OrgContext) {
     c.members.countDocuments({ organizationId: orgId, status: { $ne: "left" } }),
     c.withdrawals.find({ organizationId: orgId, status: "paid" }).sort({ date: -1, createdAt: -1 }).limit(5).toArray(),
     Promise.all([
-      c.members.countDocuments({ organizationId: orgId, status: "active" }),
+      c.members
+        .aggregate<{ n: number; shares: number }>([{ $match: { organizationId: orgId, status: "active" } }, { $group: { _id: null, n: { $sum: 1 }, shares: { $sum: { $ifNull: ["$haptaShares", 1] } } } }])
+        .toArray()
+        .then(([r]) => r ?? { n: 0, shares: 0 }),
       c.payments.countDocuments({ organizationId: orgId, status: "pending" }),
       c.expenses.countDocuments({ organizationId: orgId, status: "pending" }),
       c.organizationMemberships.countDocuments({ organizationId: orgId, status: "pending" }),
@@ -217,6 +220,7 @@ export async function adminDashboard(ctx: OrgContext) {
       c.upadPaymentClaims.countDocuments({ organizationId: orgId, status: "pending" }),
     ]),
   ]);
+  const activeMembers = activeAgg.n;
   const monthHapta = { expected: mh?.e ?? 0, collected: mh?.p ?? 0, outstanding: mh?.o ?? 0 };
   const interest = { month: ia?.interest[0]?.m ?? 0, fy: ia?.interest[0]?.f ?? 0 };
   const kindTotal = (k: string) => ia?.byKind.find((x) => x._id === k)?.v ?? 0;
@@ -301,6 +305,8 @@ export async function adminDashboard(ctx: OrgContext) {
       overdueInstallments: overdue.n,
       upcoming30DaysPaise: instFacet.upcoming[0]?.amt ?? 0,
       activeMembers,
+      /** Σ hapta shares of active members (a member paying 3 haptas counts 3) */
+      activeShares: activeAgg.shares,
       activeSchemes: schemes.filter((s) => s.status === "active").length,
       activeLoans: loanAgg?.active ?? 0,
       loanOutstandingPrincipalPaise: loanAgg?.principal ?? 0,
@@ -333,6 +339,7 @@ export async function managerDashboard(ctx: OrgContext) {
       overdueInstallments: full.totals.overdueInstallments,
       upcoming30DaysPaise: full.totals.upcoming30DaysPaise,
       activeMembers: full.totals.activeMembers,
+      activeShares: full.totals.activeShares,
       activeSchemes: full.totals.activeSchemes,
       totalMembers: full.totals.totalMembers,
       monthExpectedPaise: full.totals.monthExpectedPaise,
@@ -385,7 +392,9 @@ export async function memberDashboard(ctx: OrgContext) {
     nextInstallment: next ? { _id: next._id, dueDate: next.dueDate, periodLabel: next.periodLabel, amountPaise: owed(next) } : null,
     savings: await memberSavingsSummary(ctx.orgId, memberId),
     fundLoans: await fundLoanTotals(ctx.org, memberId),
-    monthlyHaptaPaise: ctx.org.settings.monthlyHapta?.amountPaise ?? null,
+    /** what this member pays each month: the hapta × their shares */
+    monthlyHaptaPaise: ctx.org.settings.monthlyHapta ? ctx.org.settings.monthlyHapta.amountPaise * (member?.haptaShares ?? 1) : null,
+    haptaShares: member?.haptaShares ?? 1,
     receipts,
     loans: loans.map((l) => {
       const { schedule: _s, ...rest } = l;

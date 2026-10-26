@@ -65,7 +65,7 @@ export const SchemeInputSchema = z
 
 export const EnrollSchema = z.object({
   members: z
-    .array(z.object({ memberId: z.string(), amount: money().optional().nullable(), startDate: dateOnly.optional() }))
+    .array(z.object({ memberId: z.string(), amount: money().optional().nullable(), startDate: dateOnly.optional(), shares: z.number().int().min(1).max(50).optional() }))
     .min(1)
     .max(2000),
 });
@@ -276,6 +276,7 @@ export async function generateForEnrollment(
       p.sequence,
       p.dueDate,
     );
+    const shares = enrollment.shares && enrollment.shares > 1 ? enrollment.shares : 1;
     const doc: InstallmentDoc = {
       _id: new ObjectId(),
       organizationId: org._id,
@@ -285,7 +286,8 @@ export async function generateForEnrollment(
       sequence: p.sequence,
       periodLabel: p.periodLabel,
       dueDate: ov?.dueDate ?? p.dueDate,
-      amountPaise: amt.amountPaise,
+      amountPaise: amt.amountPaise * shares,
+      ...(shares > 1 ? { shares } : {}),
       penaltyPaise: 0,
       paidPaise: 0,
       penaltyPaidPaise: 0,
@@ -345,6 +347,7 @@ export async function enrollMembers(ctx: OrgContext, schemeId: ObjectId, input: 
       schemeId,
       memberId,
       amountPaise: m.amount ?? null,
+      ...(m.shares && m.shares > 1 ? { shares: m.shares } : {}),
       startDate: m.startDate ?? s.startDate,
       status: "active",
       generatedUpTo: null,
@@ -475,8 +478,9 @@ export async function reviseAmount(ctx: OrgContext, schemeId: ObjectId, input: z
       [
         {
           $set: {
-            history: { $concatArrays: ["$history", [{ at: now, by: ctx.user._id, action: "amount_revised", from: "$amountPaise", to: input.amount, reason: input.reason ?? "Scheme amount revised" }]] },
-            amountPaise: input.amount,
+            history: { $concatArrays: ["$history", [{ at: now, by: ctx.user._id, action: "amount_revised", from: "$amountPaise", to: { $multiply: [input.amount, { $ifNull: ["$shares", 1] }] }, reason: input.reason ?? "Scheme amount revised" }]] },
+            // members with hapta shares pay the new amount × their shares
+            amountPaise: { $multiply: [input.amount, { $ifNull: ["$shares", 1] }] },
             amountSource: "revision",
             updatedAt: now,
           },
@@ -512,7 +516,7 @@ export async function setOverride(ctx: OrgContext, schemeId: ObjectId, input: z.
     if (input.amount) {
       const r = await c.installments.updateMany(
         { ...base, state: "active", paidPaise: 0 },
-        [{ $set: { history: { $concatArrays: ["$history", [{ at: now, by: ctx.user._id, action: "amount_changed", from: "$amountPaise", to: input.amount, reason: input.reason }]] }, amountPaise: input.amount, amountSource: "override", updatedAt: now } }],
+        [{ $set: { history: { $concatArrays: ["$history", [{ at: now, by: ctx.user._id, action: "amount_changed", from: "$amountPaise", to: { $multiply: [input.amount, { $ifNull: ["$shares", 1] }] }, reason: input.reason }]] }, amountPaise: { $multiply: [input.amount, { $ifNull: ["$shares", 1] }] }, amountSource: "override", updatedAt: now } }],
         { session },
       );
       updated += r.modifiedCount;

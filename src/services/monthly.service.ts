@@ -108,7 +108,42 @@ export async function enrollInMonthlyHapta(ctx: OrgContext, memberIds: ObjectId[
   const today = todayIn(ctx.org.settings.timezone);
   let start = firstOfMonth(startMonth ?? monthOf(today));
   if (start < s.startDate) start = s.startDate;
-  return enrollMembers(ctx, s._id, { members: memberIds.map((id) => ({ memberId: id.toHexString(), amount: null, startDate: start })) });
+  const c = await cols();
+  const shares = await c.members.find({ _id: { $in: memberIds }, organizationId: ctx.orgId }, { projection: { haptaShares: 1 } }).toArray();
+  const sharesOf = (id: ObjectId) => shares.find((m) => m._id.equals(id))?.haptaShares ?? 1;
+  return enrollMembers(ctx, s._id, { members: memberIds.map((id) => ({ memberId: id.toHexString(), amount: null, startDate: start, shares: sharesOf(id) })) });
+}
+
+/**
+ * Change how many haptas a member pays each month. Applies to their unpaid monthly hapta from
+ * `fromMonth` (default: this month) onwards; paid or part-paid months keep their amount.
+ */
+export async function setHaptaShares(ctx: OrgContext, memberId: ObjectId, shares: number, fromMonth?: string) {
+  const c = await cols();
+  const today = todayIn(ctx.org.settings.timezone);
+  const from = firstOfMonth(fromMonth ?? monthOf(today));
+  const s = await primaryScheme(ctx.orgId);
+  let updated = 0;
+  if (s) {
+    await c.memberSchemeEnrollments.updateOne({ organizationId: ctx.orgId, schemeId: s._id, memberId }, { $set: { shares, updatedAt: new Date() } });
+    const now = new Date();
+    const r = await c.installments.updateMany(
+      { organizationId: ctx.orgId, schemeId: s._id, memberId, dueDate: { $gte: from }, paidPaise: 0, state: "active", amountSource: { $in: ["scheme", "revision", "override"] } },
+      [
+        {
+          $set: {
+            // amountPaise already includes the old shares: back to one hapta, then × the new shares
+            amountPaise: { $multiply: [{ $round: [{ $divide: ["$amountPaise", { $ifNull: ["$shares", 1] }] }, 0] }, shares] },
+            history: { $concatArrays: ["$history", [{ at: now, by: ctx.user._id, action: "shares_changed", from: { $ifNull: ["$shares", 1] }, to: shares, reason: `Hapta shares set to ${shares}` }]] },
+            shares,
+            updatedAt: now,
+          },
+        },
+      ],
+    );
+    updated = r.modifiedCount;
+  }
+  return { installmentsUpdated: updated };
 }
 
 /* ------------------------------------------------------------------ month view */
@@ -172,6 +207,8 @@ export async function monthView(ctx: OrgContext, q: z.infer<typeof MonthQuery>) 
         installmentId: i._id,
         memberId: i.memberId,
         member: mm.get(i.memberId.toHexString()) ?? null,
+        /** hapta shares (e.g. 3 = pays 3 × the monthly amount) */
+        shares: i.shares ?? 1,
         schemeName: scheme?.name ?? "",
         periodLabel: i.periodLabel,
         dueDate: i.dueDate,

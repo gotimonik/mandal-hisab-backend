@@ -29,6 +29,10 @@ export const MemberInputSchema = z.object({
   enrollInMonthlyHapta: z.boolean().optional(),
   /** First hapta month (YYYY-MM); default: current month */
   haptaStartMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Use YYYY-MM").optional(),
+  /** How many haptas they pay each month (e.g. 3 × ₹500). Default 1. */
+  haptaShares: z.coerce.number().int().min(1, "At least 1").max(50, "At most 50").optional(),
+  /** When changing hapta shares: first month it applies to (default this month) */
+  sharesFromMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Use YYYY-MM").optional(),
   /** On create with an email: email them an invitation to sign in to the Mandal (default true) */
   inviteToApp: z.boolean().optional(),
 });
@@ -68,6 +72,7 @@ export async function createMember(ctx: OrgContext, input: MemberInput) {
       status: input.status ?? "active",
       userId: null,
       notes: input.notes,
+      ...(input.haptaShares && input.haptaShares > 1 ? { haptaShares: input.haptaShares } : {}),
       searchText: "",
       createdAt: now,
       updatedAt: now,
@@ -94,7 +99,7 @@ export async function createMember(ctx: OrgContext, input: MemberInput) {
 }
 
 export async function updateMember(ctx: OrgContext, id: ObjectId, rawInput: Partial<z.infer<typeof MemberInputSchema>>) {
-  const { enrollInMonthlyHapta: _e, haptaStartMonth: _h, ...input } = rawInput;
+  const { enrollInMonthlyHapta: _e, haptaStartMonth: _h, inviteToApp: _i, sharesFromMonth, ...input } = rawInput;
   const c = await cols();
   const before = await c.members.findOne({ _id: id, organizationId: ctx.orgId });
   if (!before) throw notFound("Member");
@@ -109,6 +114,11 @@ export async function updateMember(ctx: OrgContext, id: ObjectId, rawInput: Part
     throw e;
   }
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "member.update", entityType: "member", entityId: id, before: input && pick(before, Object.keys(input)), after: input });
+  if (input.haptaShares !== undefined && input.haptaShares !== (before.haptaShares ?? 1)) {
+    const { setHaptaShares } = await import("./monthly.service");
+    const r = await setHaptaShares(ctx, id, input.haptaShares, sharesFromMonth);
+    return { ...next, sharesInstallmentsUpdated: r.installmentsUpdated };
+  }
   return next;
 }
 

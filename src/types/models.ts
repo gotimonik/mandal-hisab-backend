@@ -194,6 +194,8 @@ export interface MemberDoc extends Timestamps {
   status: "active" | "inactive" | "left";
   userId?: Id | null;
   notes?: string;
+  /** How many haptas this member pays each month (e.g. 3 × ₹500). Default 1. */
+  haptaShares?: number;
   searchText: string; // lower-cased name/number/phone for search
   /**
    * Cached member balance (paise) = Σ memberLedger credits − debits. Maintained ONLY by
@@ -352,6 +354,8 @@ export interface MemberSchemeEnrollmentDoc extends Timestamps {
   schemeId: Id;
   memberId: Id;
   amountPaise?: number | null; // member-specific override
+  /** hapta shares: each installment is the amount × shares (default 1) */
+  shares?: number;
   startDate: Date;
   status: "active" | "exited";
   generatedUpTo?: Date | null;
@@ -386,6 +390,8 @@ export interface InstallmentDoc extends Timestamps {
   state: InstallmentState;
   stateReason?: string;
   amountSource: "scheme" | "member" | "override" | "revision";
+  /** hapta shares this installment was generated for (amountPaise already includes them). Default 1. */
+  shares?: number;
   history: { at: Date; by: Id; action: string; from?: unknown; to?: unknown; reason?: string }[];
 }
 
