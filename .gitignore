@@ -147,3 +147,10 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# MandalHisab
+!.env.example
+.vercel
+*.tsbuildinfo
+/test-results
+/playwright-report
