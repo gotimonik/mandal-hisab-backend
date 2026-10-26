@@ -568,7 +568,8 @@ export async function createInvitation(ctx: OrgContext, input: z.infer<typeof In
   const base = env().FRONTEND_URL;
   const acceptPath = `/invite?token=${encodeURIComponent(token)}`;
   // new people register first (email pre-filled), then land on the invitation
-  const link = invitee ? `${base}${acceptPath}` : `${base}/register?email=${encodeURIComponent(input.email)}&next=${encodeURIComponent(acceptPath)}`;
+  const registerQs = new URLSearchParams({ email: input.email, ...(member ? { name: member.name } : {}), next: acceptPath });
+  const link = invitee ? `${base}${acceptPath}` : `${base}/register?${registerQs.toString()}`;
   const greeting = invitee?.name ? `Namaste ${invitee.name.split(" ")[0]},` : member ? `Namaste ${member.name.split(" ")[0]},` : "Namaste,";
   const steps = invitee
     ? `Sign in with ${input.email} and tap "Join the Mandal".`

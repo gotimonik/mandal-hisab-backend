@@ -25,7 +25,10 @@ describe("member invitations by email", () => {
     const email = `${uniq("new")}@example.com`.toLowerCase();
     const m = await ok(api("POST", `/orgs/${o.orgId}/members`, { token: o.admin.token, body: { name: "Nayan Patel", email } }));
     expect(m.invitation).toMatchObject({ ok: true, existingUser: false, emailed: true });
-    expect(m.invitation.inviteLink).toContain(`/register?email=${encodeURIComponent(email)}`);
+    const reg0 = new URL(m.invitation.inviteLink);
+    expect(reg0.pathname).toBe("/register");
+    expect(reg0.searchParams.get("email")).toBe(email);
+    expect(reg0.searchParams.get("name")).toBe("Nayan Patel");
     const mail = await lastMailTo(email);
     expect(mail?.subject).toContain("Invite Mandal");
     expect(mail?.html).toContain("Create account");
