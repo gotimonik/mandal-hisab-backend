@@ -2,6 +2,14 @@ import { DEFAULT_CURRENCY } from "./currency";
 import { DEFAULT_MANAGER_FLAGS } from "./permissions";
 import type { OrganizationDoc, OrganizationSettings } from "@/types/models";
 
+/**
+ * MandalHisab only records cash for now: no online payments, UPI, bank transfers or cheques.
+ * Every method check reads org.settings.paymentMethods, which is forced to this list on load,
+ * so existing Mandals are cash-only too. Old records keep whatever method they were saved with.
+ */
+export const ALLOWED_PAYMENT_METHODS = ["cash"] as const;
+export const CASH_ONLY_MESSAGE = "Only cash payments can be recorded for now";
+
 export const DEFAULT_EXPENSE_CATEGORIES = [
   { key: "festival", name: "Festival & events" },
   { key: "puja", name: "Puja & rituals" },
@@ -29,7 +37,7 @@ export function defaultSettings(): OrganizationSettings {
     overdueReminderEveryDays: 7,
     managerPermissions: { ...DEFAULT_MANAGER_FLAGS },
     expenseCategories: DEFAULT_EXPENSE_CATEGORIES,
-    paymentMethods: ["cash", "upi", "bank_transfer", "cheque"],
+    paymentMethods: [...ALLOWED_PAYMENT_METHODS],
     installmentHorizonMonths: 12,
     monthlyHapta: null,
     haptaTreatment: "member_savings",
@@ -57,6 +65,8 @@ export function withSettingsDefaults<T extends Pick<OrganizationDoc, "settings">
     fundLoans: { ...d.fundLoans, ...(s.fundLoans ?? {}) },
     membership: { ...d.membership, ...(s.membership ?? {}) },
     managerPermissions: { ...d.managerPermissions, ...(s.managerPermissions ?? {}) },
+    // Cash only for now, whatever was saved before.
+    paymentMethods: [...ALLOWED_PAYMENT_METHODS],
   };
   return org;
 }

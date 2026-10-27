@@ -23,7 +23,7 @@ async function assertLedgerBalanced(orgId: string) {
 }
 
 async function bankAccount(o: Ctx, opening = "200000") {
-  return ok(api("POST", `/orgs/${o.orgId}/accounts`, { token: o.admin.token, body: { name: `Bank ${uniq()}`, type: "bank", bankName: "SBI", openingBalance: opening, openingDate: "2026-04-01" } }));
+  return ok(api("POST", `/orgs/${o.orgId}/accounts`, { token: o.admin.token, body: { name: `Bank ${uniq()}`, type: "cash", openingBalance: opening, openingDate: "2026-04-01" } }));
 }
 
 describe("accounts & transfers", () => {
@@ -79,7 +79,7 @@ describe("expenses & donations", () => {
   const expense = (token: string, amount: string, extra: Record<string, unknown> = {}) =>
     api("POST", `/orgs/${o.orgId}/expenses`, {
       token,
-      body: { categoryKey: "decoration", payeeName: "Shree Decorators", description: "Pandal lights", amount, date: "2026-08-20", method: "bank_transfer", accountId: bankId, eventName: "Ganeshotsav 2026", idempotencyKey: uniq("exp"), ...extra },
+      body: { categoryKey: "decoration", payeeName: "Shree Decorators", description: "Pandal lights", amount, date: "2026-08-20", method: "cash", accountId: bankId, eventName: "Ganeshotsav 2026", idempotencyKey: uniq("exp"), ...extra },
     });
 
   it("manager expenses above the threshold need admin approval; rejection posts nothing", async () => {
@@ -113,7 +113,7 @@ describe("expenses & donations", () => {
   });
 
   it("donations issue receipts, and reversals cancel them", async () => {
-    const d = await ok(api("POST", `/orgs/${o.orgId}/donations`, { token: o.admin.token, body: { donorName: "Patel Family", amount: "5001", date: "2026-08-22", method: "upi", accountId: bankId, eventName: "Ganeshotsav 2026", donorPan: "ABCDE1234F", idempotencyKey: uniq("don") } }));
+    const d = await ok(api("POST", `/orgs/${o.orgId}/donations`, { token: o.admin.token, body: { donorName: "Patel Family", amount: "5001", date: "2026-08-22", method: "cash", accountId: bankId, eventName: "Ganeshotsav 2026", idempotencyKey: uniq("don") } }));
     expect(d.donation.status).toBe("verified");
     expect(await bal(o.orgId, "income:donation")).toBe(-500_100);
     const ev = await ok(api("GET", `/orgs/${o.orgId}/reports/events?from=2026-04-01&to=2027-03-31`, { token: o.admin.token }));

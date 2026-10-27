@@ -1,3 +1,4 @@
+import { ALLOWED_PAYMENT_METHODS, CASH_ONLY_MESSAGE } from "@/lib/org-defaults";
 import { formatMoney } from "@/lib/currency";
 import { ObjectId } from "mongodb";
 import { z } from "zod";
@@ -282,7 +283,7 @@ export async function startSettlement(ctx: OrgContext, input: z.infer<typeof Sta
 export const PayoutSchema = z.object({
   date: dateOnly.optional(),
   accountId: z.string().optional(),
-  method: z.string().min(2).max(30).default("cash"),
+  method: z.string().refine((m) => (ALLOWED_PAYMENT_METHODS as readonly string[]).includes(m), CASH_ONLY_MESSAGE).default("cash"),
   reference: optText(100),
   idempotencyKey,
 });

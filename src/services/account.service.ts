@@ -19,21 +19,8 @@ import {
 
 export const AccountInputSchema = z.object({
   name: z.string().trim().min(2).max(80),
-  type: z.enum(["cash", "bank", "upi", "other"]),
-  bankName: optText(100),
-  accountNumberLast4: z
-    .string()
-    .regex(/^\d{4}$/, "Only the last 4 digits")
-    .optional()
-    .or(z.literal("").transform(() => undefined)),
-  ifsc: z
-    .string()
-    .trim()
-    .toUpperCase()
-    .regex(/^[A-Z]{4}0[A-Z0-9]{6}$/, "Invalid IFSC")
-    .optional()
-    .or(z.literal("").transform(() => undefined)),
-  upiId: optText(100),
+  // Cash only for now: no bank or UPI accounts, and no bank details are collected.
+  type: z.enum(["cash"], { message: "Only cash accounts can be added for now" }).default("cash"),
   openingBalance: money({ allowZero: true }).default(0),
   openingDate: dateOnly.optional(),
 });
@@ -74,10 +61,6 @@ export async function createAccount(ctx: OrgContext, input: z.infer<typeof Accou
     organizationId: ctx.orgId,
     name: input.name,
     type: input.type,
-    bankName: input.bankName,
-    accountNumberLast4: input.accountNumberLast4,
-    ifsc: input.ifsc,
-    upiId: input.upiId,
     openingBalancePaise: input.openingBalance,
     openingDate: input.openingDate ?? todayIn(ctx.org.settings.timezone),
     isActive: true,
@@ -115,7 +98,7 @@ export async function createAccount(ctx: OrgContext, input: z.infer<typeof Accou
   return doc;
 }
 
-export async function updateAccount(ctx: OrgContext, id: ObjectId, input: { name?: string; isActive?: boolean; bankName?: string; upiId?: string }) {
+export async function updateAccount(ctx: OrgContext, id: ObjectId, input: { name?: string; isActive?: boolean }) {
   const c = await cols();
   const fa = await c.financialAccounts.findOne({ _id: id, organizationId: ctx.orgId });
   if (!fa) throw notFound("Account");
