@@ -2,7 +2,12 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypt
 import bcrypt from "bcryptjs";
 import { env } from "@/config/env";
 
-const BCRYPT_ROUNDS = process.env.NODE_ENV === "test" ? 4 : 12;
+/**
+ * bcryptjs is pure JS, so each extra round doubles the time on a small server CPU.
+ * 10 rounds is the bcrypt default and still strong; 12 was taking seconds per login.
+ * Older cost-12 hashes keep working and are upgraded on the next successful login.
+ */
+export const BCRYPT_ROUNDS = process.env.NODE_ENV === "test" ? 4 : 10;
 
 export async function hashPassword(password: string): Promise<string> {
   return bcrypt.hash(password, BCRYPT_ROUNDS);
@@ -10,6 +15,15 @@ export async function hashPassword(password: string): Promise<string> {
 
 export async function verifyPassword(password: string, hash: string): Promise<boolean> {
   return bcrypt.compare(password, hash);
+}
+
+/** True when a stored hash was made with a different cost than we use now. */
+export function needsRehash(hash: string): boolean {
+  try {
+    return bcrypt.getRounds(hash) !== BCRYPT_ROUNDS;
+  } catch {
+    return false;
+  }
 }
 
 /** 256-bit URL-safe random token. */

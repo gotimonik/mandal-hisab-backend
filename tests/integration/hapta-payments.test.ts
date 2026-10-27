@@ -231,10 +231,13 @@ describe("payments", () => {
     const req = await ok(
       api("POST", `/orgs/${o.orgId}/me/payment-requests`, {
         token: userA.token,
-        body: { amount: "1000", date: "2026-04-11", method: "upi", reference: "UPI123", idempotencyKey: uniq("req") },
+        body: { amount: "1000", date: "2026-04-11", method: "cash", reference: "UPI123", idempotencyKey: uniq("req") },
       }),
     );
     expect(req.payment.status).toBe("pending");
+    // cash only for now: any other method is refused
+    const upi = await api("POST", `/orgs/${o.orgId}/me/payment-requests`, { token: userA.token, body: { amount: "1000", date: "2026-04-11", method: "upi", idempotencyKey: uniq("req") } });
+    expect(upi.status).toBe(400);
     const pBVerified = (await ok(pay(o, o.admin.token, b.member._id, "1000"))).payment;
     // member A cannot open member B's receipt
     expect((await api("GET", `/orgs/${o.orgId}/receipts/${pBVerified.receiptId}`, { token: userA.token })).status).toBe(404);

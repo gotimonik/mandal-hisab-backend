@@ -20,13 +20,6 @@ export const DonationSchema = z.object({
   donorName: z.string().trim().min(2).max(120),
   memberId: z.string().optional().nullable(),
   donorPhone: optText(20),
-  donorPan: z
-    .string()
-    .trim()
-    .toUpperCase()
-    .regex(/^[A-Z]{5}[0-9]{4}[A-Z]$/, "Invalid PAN")
-    .optional()
-    .or(z.literal("").transform(() => undefined)),
   amount: money(),
   date: dateOnly,
   method: z.string().min(2).max(30),
@@ -67,7 +60,6 @@ export async function recordDonation(ctx: OrgContext, input: z.infer<typeof Dona
     donorName: input.donorName,
     memberId,
     donorPhone: input.donorPhone,
-    donorPan: input.donorPan,
     amountPaise: input.amount,
     date: input.date,
     method: input.method,

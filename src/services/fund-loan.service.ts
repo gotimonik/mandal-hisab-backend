@@ -1,3 +1,4 @@
+import { ALLOWED_PAYMENT_METHODS, CASH_ONLY_MESSAGE } from "@/lib/org-defaults";
 import { formatMoney } from "@/lib/currency";
 import { ObjectId, type AnyBulkWriteOperation, type ClientSession } from "mongodb";
 import { z } from "zod";
@@ -259,7 +260,7 @@ export const LoanPaymentSchema = z
     date: dateOnly,
     note: optText(300),
     accountId: z.string().optional(),
-    method: z.string().min(2).max(30).default("cash"),
+    method: z.string().refine((m) => (ALLOWED_PAYMENT_METHODS as readonly string[]).includes(m), CASH_ONLY_MESSAGE).default("cash"),
     reference: optText(100),
     idempotencyKey,
   })

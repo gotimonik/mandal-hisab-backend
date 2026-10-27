@@ -182,7 +182,7 @@ export function registerOrgRoutes(r: Router) {
     accountService.updateAccount(
       await req.org("accounts.manage", W),
       parseObjectId(req.params.id, "Account"),
-      await req.body(z.object({ name: z.string().trim().min(2).max(80).optional(), isActive: z.boolean().optional(), bankName: optText(100), upiId: optText(100) })),
+      await req.body(z.object({ name: z.string().trim().min(2).max(80).optional(), isActive: z.boolean().optional() })),
     ),
   );
   r.post("/orgs/:orgId/transfers", async (req) =>

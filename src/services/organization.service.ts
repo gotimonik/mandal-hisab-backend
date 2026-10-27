@@ -7,7 +7,7 @@ import { withTransaction } from "@/lib/db";
 import { hashToken, joinCode, randomToken } from "@/lib/crypto";
 import { AppError, badRequest, conflict, forbidden, isDuplicateKeyError, notFound } from "@/lib/errors";
 import { audit } from "@/lib/audit";
-import { defaultSettings } from "@/lib/org-defaults";
+import { defaultSettings, ALLOWED_PAYMENT_METHODS, CASH_ONLY_MESSAGE } from "@/lib/org-defaults";
 import type { AuthContext, OrgContext } from "@/lib/auth";
 import type {
   OrganizationDoc,
@@ -101,7 +101,7 @@ export const UpdateOrgSchema = z.object({
         )
         .min(1)
         .max(100),
-      paymentMethods: z.array(z.string().regex(/^[a-z0-9_]{2,30}$/)).min(1).max(20),
+      paymentMethods: z.array(z.enum(ALLOWED_PAYMENT_METHODS, { message: CASH_ONLY_MESSAGE })).min(1).max(20),
       installmentHorizonMonths: z.number().int().min(1).max(60),
       haptaTreatment: z.enum(["member_savings", "income"]),
       interest: z.object({

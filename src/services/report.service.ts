@@ -882,7 +882,7 @@ function toTableINR(kind: string, data: Record<string, unknown>): { headers: str
     case "interest":
       return { headers: ["Loan", "Member", "Method", "Charged (₹)", "Paid (₹)", "Outstanding (₹)", "Scheduled, not due (₹)"], rows: d.rows.map((x: any) => [x.loanNumber, x.memberName, x.method, r(x.interestChargedPaise), r(x.interestPaidPaise), r(x.interestOutstandingPaise), r(x.scheduledNotYetDuePaise)]) };
     case "donations":
-      return { headers: ["Date", "Donor", "PAN", "Event", "Purpose", "Method", "Reference", "Amount (₹)"], rows: d.items.map((x: any) => [dd(x.date), x.donorName, x.donorPan ?? "", x.eventName ?? "", x.purpose ?? "", x.method, x.reference ?? "", r(x.amountPaise)]) };
+      return { headers: ["Date", "Donor", "Event", "Purpose", "Method", "Reference", "Amount (₹)"], rows: d.items.map((x: any) => [dd(x.date), x.donorName, x.eventName ?? "", x.purpose ?? "", x.method, x.reference ?? "", r(x.amountPaise)]) };
     case "events":
       return { headers: ["Event", "Income (₹)", "Expenses (₹)", "Net (₹)"], rows: d.rows.map((x: any) => [x.eventName, r(x.incomePaise), r(x.expensePaise), r(x.netPaise)]) };
     case "ledger":

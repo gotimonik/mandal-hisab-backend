@@ -269,7 +269,7 @@ describe("'I have paid' with a purpose", () => {
   it("member reports upad interest + part returned; admin verifies → receipt with the member's method", async () => {
     const opts = await ok(api("GET", `/orgs/${o.orgId}/me/payment-options`, { token: mem.token }));
     const due = opts.upads[0].interestDuePaise as number;
-    const claim = (body: Record<string, unknown>) => api("POST", `/orgs/${o.orgId}/me/upad-payments`, { token: mem.token, body: { loanId, date: "2026-10-20", method: "upi", idempotencyKey: uniq("uc"), ...body } });
+    const claim = (body: Record<string, unknown>) => api("POST", `/orgs/${o.orgId}/me/upad-payments`, { token: mem.token, body: { loanId, date: "2026-10-20", method: "cash", idempotencyKey: uniq("uc"), ...body } });
     expect((await claim({ interestAmount: String(due / 100 + 1) })).status).toBe(400); // more than due
     expect((await claim({ principalAmount: "1001" })).status).toBe(400); // more than outstanding
     const c1 = await ok(claim({ interestAmount: String(due / 100), principalAmount: "200", reference: "UPI123" }));
@@ -289,7 +289,7 @@ describe("'I have paid' with a purpose", () => {
     expect(loan.loan.outstandingPaise).toBe(80_000);
     expect(loan.loan.interestDuePaise).toBe(0);
     const receipt = await ok(api("GET", `/orgs/${o.orgId}/receipts/${v.receiptId}`, { token: mem.token }));
-    expect(receipt.receipt).toMatchObject({ method: "upi", reference: "UPI123", amountPaise: due + 20_000 });
+    expect(receipt.receipt).toMatchObject({ method: "cash", reference: "UPI123", amountPaise: due + 20_000 });
     const mine = await ok<any[]>(api("GET", `/orgs/${o.orgId}/me/upad-payments`, { token: mem.token }));
     expect(mine[0]).toMatchObject({ status: "verified", loanNumber: loan.loan.number });
   });
@@ -303,7 +303,7 @@ describe("'I have paid' with a purpose", () => {
   });
 
   it("if the admin records the reported money with Receive, the member's claim closes itself", async () => {
-    const c3 = await ok(api("POST", `/orgs/${o.orgId}/me/upad-payments`, { token: mem.token, body: { loanId, principalAmount: "100", date: "2026-10-22", method: "upi", idempotencyKey: uniq("uc") } }));
+    const c3 = await ok(api("POST", `/orgs/${o.orgId}/me/upad-payments`, { token: mem.token, body: { loanId, principalAmount: "100", date: "2026-10-22", method: "cash", idempotencyKey: uniq("uc") } }));
     const r = await ok(pay(o, loanId, { principalAmount: "100", date: "2026-10-22" }));
     expect(r.settledClaimId).toBe(c3.claim._id);
     expect(await ok<any[]>(api("GET", `/orgs/${o.orgId}/upad-payments`, { token: o.admin.token }))).toHaveLength(0);
