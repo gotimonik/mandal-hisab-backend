@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { env } from "@/config/env";
 import { cols } from "@/lib/collections";
-import { hashPassword, hashToken, randomToken, verifyPassword } from "@/lib/crypto";
+import { BCRYPT_ROUNDS, hashPassword, hashToken, needsRehash, randomToken, verifyPassword } from "@/lib/crypto";
 import { AppError, badRequest, conflict, isDuplicateKeyError, unauthorized } from "@/lib/errors";
 import { rateLimit } from "@/lib/rate-limit";
 import { audit } from "@/lib/audit";
@@ -41,9 +41,15 @@ export function publicUser(u: UserDoc) {
   };
 }
 
-let dummyHash: string | null = null;
+/**
+ * Unknown emails still pay for one bcrypt compare, so response time doesn't reveal
+ * which emails have accounts. Precomputed at the production cost so the first failed
+ * login doesn't also pay for generating it.
+ */
+const DUMMY_HASH_10 = "$2b$10$LfRwklA6cIqVEQNOEoXHy.X5h0TBX8ZdKYl0ahcq25Ox7rnOV2Qlq";
+let dummyHash: string | null = BCRYPT_ROUNDS === 10 ? DUMMY_HASH_10 : null;
 async function burn(password: string) {
-  dummyHash ??= await bcrypt.hash("not-a-real-password", process.env.NODE_ENV === "test" ? 4 : 12);
+  dummyHash ??= await bcrypt.hash("not-a-real-password", BCRYPT_ROUNDS);
   await bcrypt.compare(password, dummyHash);
 }
 
@@ -126,10 +132,13 @@ export async function verifyEmail(token: string) {
 }
 
 export async function login(input: z.infer<typeof LoginSchema>, meta: { ip: string; userAgent: string }) {
-  await rateLimit(`login-ip:${meta.ip}`, 30, 900);
-  await rateLimit(`login-email:${input.email}`, 10, 900);
+  // Both rate-limit counters and the user lookup are independent: one round trip, not three.
   const c = await cols();
-  const user = await c.users.findOne({ email: input.email });
+  const [, , user] = await Promise.all([
+    rateLimit(`login-ip:${meta.ip}`, 30, 900),
+    rateLimit(`login-email:${input.email}`, 10, 900),
+    c.users.findOne({ email: input.email }),
+  ]);
   if (!user) {
     await burn(input.password);
     throw unauthorized("Invalid email or password");
@@ -142,18 +151,23 @@ export async function login(input: z.infer<typeof LoginSchema>, meta: { ip: stri
   const token = randomToken();
   const now = new Date();
   const expiresAt = new Date(now.getTime() + env().SESSION_TTL_DAYS * 86_400_000);
-  await c.sessions.insertOne({
-    _id: new ObjectId(),
-    userId: user._id,
-    tokenHash: hashToken(token),
-    sessionVersion: user.sessionVersion,
-    createdAt: now,
-    expiresAt,
-    lastUsedAt: now,
-    userAgent: meta.userAgent,
-    ip: meta.ip,
-  });
-  await c.users.updateOne({ _id: user._id }, { $set: { lastLoginAt: now } });
+  // Upgrade old cost-12 hashes once, so later logins are fast too.
+  const userSet: Partial<UserDoc> = { lastLoginAt: now };
+  if (needsRehash(user.passwordHash)) userSet.passwordHash = await hashPassword(input.password);
+  await Promise.all([
+    c.sessions.insertOne({
+      _id: new ObjectId(),
+      userId: user._id,
+      tokenHash: hashToken(token),
+      sessionVersion: user.sessionVersion,
+      createdAt: now,
+      expiresAt,
+      lastUsedAt: now,
+      userAgent: meta.userAgent,
+      ip: meta.ip,
+    }),
+    c.users.updateOne({ _id: user._id }, { $set: userSet }),
+  ]);
   return { token, expiresAt, user: publicUser(user) };
 }
 
