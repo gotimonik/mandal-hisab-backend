@@ -1,14 +1,19 @@
 import { ObjectId, type ClientSession } from "mongodb";
 import { cols } from "@/lib/collections";
 import type { AuthContext } from "@/lib/auth";
+import type { NotificationDoc } from "@/types/models";
 import { queuePush } from "./push.service";
+import { isLang, renderCopy, type Lang, type NotificationCopy } from "./notification-copy";
 
 export interface NotifyInput {
   organizationId: ObjectId;
   userId: ObjectId;
   type: string;
-  title: string;
-  body: string;
+  /** The words, in the reader's language (preferred). */
+  copy?: NotificationCopy;
+  /** Fixed English words, for anything without a `copy` entry. */
+  title?: string;
+  body?: string;
   link?: string;
   /** Unique per user. Re-sending the same key is a no-op (prevents duplicate reminders). */
   dedupeKey: string;
@@ -20,6 +25,7 @@ export interface NotifyInput {
  */
 export async function notify(n: NotifyInput, session?: ClientSession): Promise<boolean> {
   const c = await cols();
+  const en = n.copy ? renderCopy("en", n.copy) : { title: n.title ?? "", body: n.body ?? "" };
   const r = await c.notifications.updateOne(
     { userId: n.userId, dedupeKey: n.dedupeKey },
     {
@@ -28,8 +34,9 @@ export async function notify(n: NotifyInput, session?: ClientSession): Promise<b
         organizationId: n.organizationId,
         userId: n.userId,
         type: n.type,
-        title: n.title,
-        body: n.body,
+        title: en.title,
+        body: en.body,
+        ...(n.copy ? { copy: n.copy } : {}),
         link: n.link,
         dedupeKey: n.dedupeKey,
         readAt: null,
@@ -78,7 +85,9 @@ export async function listNotifications(auth: AuthContext, opts: { organizationI
     c.notifications.countDocuments(q),
     c.notifications.countDocuments({ ...q, readAt: null }),
   ]);
-  return { items, unread, total, page, pageSize };
+  // written in the reader's language
+  const lang: Lang = isLang(auth.user.language) ? auth.user.language : "en";
+  return { items: items.map((i) => localize(i, lang)), unread, total, page, pageSize };
 }
 
 export async function markRead(auth: AuthContext, ids: ObjectId[] | "all") {
@@ -87,4 +96,14 @@ export async function markRead(auth: AuthContext, ids: ObjectId[] | "all") {
   if (ids !== "all") q._id = { $in: ids };
   await c.notifications.updateMany(q, { $set: { readAt: new Date() } });
   return { ok: true };
+}
+
+/** A notification's title and body in a language (stored English when it has no copy). */
+export function localize<T extends NotificationDoc>(n: T, lang: Lang): T {
+  if (!n.copy) return n;
+  try {
+    return { ...n, ...renderCopy(lang, n.copy as NotificationCopy) };
+  } catch {
+    return n;
+  }
 }

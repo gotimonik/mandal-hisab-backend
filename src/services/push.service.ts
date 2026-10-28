@@ -4,6 +4,8 @@ import { z } from "zod";
 import { cols } from "@/lib/collections";
 import { env } from "@/config/env";
 import type { AuthContext } from "@/lib/auth";
+import { localize } from "./notification.service";
+import { isLang } from "./notification-copy";
 
 /**
  * Phone push notifications for the iOS / Android apps, through Firebase Cloud Messaging (HTTP v1).
@@ -94,10 +96,17 @@ export async function sendNotificationPush(notificationId: ObjectId) {
   if (!n) return 0;
   const devices = await c.pushDevices.find({ userId: n.userId }).toArray();
   if (!devices.length) return 0;
-  const badge = await c.notifications.countDocuments({ userId: n.userId, readAt: null });
+  const [badge, user, org] = await Promise.all([
+    c.notifications.countDocuments({ userId: n.userId, readAt: null }),
+    c.users.findOne({ _id: n.userId }, { projection: { language: 1 } }),
+    c.organizations.findOne({ _id: n.organizationId }, { projection: { name: 1 } }),
+  ]);
+  // in their language, and say which Mandal it's about (people can be in several)
+  const words = localize(n, isLang(user?.language) ? user.language : "en");
+  const title = org?.name ? `${words.title} · ${org.name}` : words.title;
   let sent = 0;
   for (const d of devices) {
-    const r = await send({ token: d.token, title: n.title, body: n.body, badge, data: { link: n.link ?? "", notificationId: n._id.toHexString(), organizationId: n.organizationId.toHexString() } });
+    const r = await send({ token: d.token, title, body: words.body, badge, data: { link: n.link ?? "", notificationId: n._id.toHexString(), organizationId: n.organizationId.toHexString() } });
     if (r === "ok") sent++;
     // the app was uninstalled or the token expired: forget it
     if (r === "invalid-token") await c.pushDevices.deleteOne({ _id: d._id });

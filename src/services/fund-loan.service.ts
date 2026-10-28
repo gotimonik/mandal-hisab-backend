@@ -17,6 +17,7 @@ import { rateInterest } from "./member-interest.service";
 import { lastOfMonth, monthOf } from "./monthly.service";
 import { cancelReceiptFor, issueReceipt } from "./receipt.service";
 import { notifyMember } from "./notification.service";
+import { copy } from "./notification-copy";
 
 /**
  * Upad (ઉપાડ): loans from the Mandal fund.
@@ -201,8 +202,7 @@ export async function giveFundLoan(ctx: OrgContext, input: z.infer<typeof GiveLo
     await refreshLoanDues(ctx.org, loan);
     await notifyMember(ctx.orgId, loan.memberId, {
       type: "fundLoan.given",
-      title: "Upad given",
-      body: `${formatMoney(loan.principalPaise, ctx.org.settings.currency)} given to you from the Mandal fund (${loan.number}). Interest ${loan.monthlyRate}% per month from ${loan.firstInterestMonth}.`,
+      copy: copy("fundLoan.given", { amountPaise: loan.principalPaise, number: loan.number, rate: loan.monthlyRate, fromMonth: loan.firstInterestMonth }, ctx.org.settings.currency),
       link: `/org/${ctx.orgId}/my`,
       dedupeKey: `fl:${loan._id}`,
     });

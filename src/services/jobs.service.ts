@@ -1,11 +1,11 @@
-import { formatMoney } from "@/lib/currency";
 import { ObjectId } from "mongodb";
 import { cols } from "@/lib/collections";
 import { bpsOf } from "@/lib/money";
-import { diffDays, formatIndianDate, todayIn, utcAddDays } from "@/lib/dates";
+import { diffDays, todayIn, utcAddDays } from "@/lib/dates";
 import type { OrganizationDoc } from "@/types/models";
 import { generateForEnrollment, horizonFor } from "./scheme.service";
 import { notifyMember } from "./notification.service";
+import { copy } from "./notification-copy";
 
 export interface JobReport {
   organizations: number;
@@ -88,7 +88,8 @@ async function runForOrg(org: OrganizationDoc, now: Date, report: JobReport) {
     if (changed) await c.loans.updateOne({ _id: l._id, updatedAt: l.updatedAt }, { $set: { schedule: rows, updatedAt: new Date() } });
   }
 
-  // 3. reminders
+  // 3. reminders (with the scheme's name, so people in several schemes know which one)
+  const schemeNames = new Map((await c.haptaSchemes.find({ organizationId: org._id }, { projection: { name: 1 } }).toArray()).map((s) => [s._id.toHexString(), s.name]));
   for (const days of org.settings.reminderDaysBefore) {
     const target = utcAddDays(today, days);
     const due = await c.installments
@@ -99,8 +100,7 @@ async function runForOrg(org: OrganizationDoc, now: Date, report: JobReport) {
       const owed = i.amountPaise + i.penaltyPaise - i.paidPaise - i.penaltyPaidPaise;
       const sent = await notifyMember(org._id, i.memberId, {
         type: "installment.reminder",
-        title: days === 0 ? "Hapta due today" : `Hapta due in ${days} day${days === 1 ? "" : "s"}`,
-        body: `${i.periodLabel}: ${formatMoney(owed, org.settings.currency)} due on ${formatIndianDate(i.dueDate)}.`,
+        copy: copy("installment.reminder", { days, scheme: schemeNames.get(i.schemeId.toHexString()) ?? "", period: i.periodLabel, amountPaise: owed, dueDate: i.dueDate.toISOString() }, org.settings.currency),
         link: `/org/${org._id}/my`,
         dedupeKey: `due:${i._id}:${days}`,
       });
@@ -119,8 +119,7 @@ async function runForOrg(org: OrganizationDoc, now: Date, report: JobReport) {
       const owed = i.amountPaise + i.penaltyPaise - i.paidPaise - i.penaltyPaidPaise;
       const sent = await notifyMember(org._id, i.memberId, {
         type: "installment.overdue",
-        title: "Hapta overdue",
-        body: `${i.periodLabel}: ${formatMoney(owed, org.settings.currency)} is ${late} days overdue.`,
+        copy: copy("installment.overdue", { scheme: schemeNames.get(i.schemeId.toHexString()) ?? "", period: i.periodLabel, amountPaise: owed, lateDays: late }, org.settings.currency),
         link: `/org/${org._id}/my`,
         dedupeKey: `overdue:${i._id}:${late}`,
       });
@@ -136,8 +135,7 @@ async function runForOrg(org: OrganizationDoc, now: Date, report: JobReport) {
       if (owed <= 0) continue;
       const sent = await notifyMember(org._id, l.memberId, {
         type: "loan.reminder",
-        title: days === 0 ? "Loan installment due today" : `Loan installment due in ${days} day${days === 1 ? "" : "s"}`,
-        body: `${l.loanNumber} installment #${row.sequence}: ${formatMoney(owed, org.settings.currency)} due on ${formatIndianDate(row.dueDate)}.`,
+        copy: copy("loan.reminder", { days, loan: l.loanNumber, sequence: row.sequence, amountPaise: owed, dueDate: row.dueDate.toISOString() }, org.settings.currency),
         link: `/org/${org._id}/my`,
         dedupeKey: `loan-due:${l._id}:${row.sequence}:${days}`,
       });

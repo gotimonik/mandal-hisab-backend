@@ -28,9 +28,11 @@ describe("phone push notifications", () => {
     );
     await wait(300);
     // (the earlier join request may also reach this phone; look at the payment one)
-    const pushes = sentPushes.filter((p) => p.token === adminPhone && p.title === "Payment submitted by member");
+    const pushes = sentPushes.filter((p) => p.token === adminPhone && p.title.includes("says they paid"));
     expect(pushes).toHaveLength(1);
-    expect(pushes[0].title).toBe("Payment submitted by member");
+    // the Mandal's name is in the title, so it's clear which Mandal it's about
+    expect(pushes[0].title).toBe(`${member.name} says they paid · Shree Ganesh Mandal`);
+    expect(pushes[0].body).toBe("₹250.00 in cash for “Ganpati donation”. Verify it to issue a receipt.");
     expect(pushes[0].data.link).toContain(`/org/${o.orgId}/collections`);
     expect(pushes[0].badge).toBeGreaterThanOrEqual(1);
 
@@ -63,5 +65,38 @@ describe("phone push notifications", () => {
     await ok(api("POST", "/auth/logout", { token: o.admin.token }));
     expect(await c.pushDevices.countDocuments({ token: phone2 })).toBe(0);
 
+  });
+
+  it("writes notifications and pushes in each person's own language", async () => {
+    const o = await setupOrg("Jay Ambe Mandal");
+    const member = await ok(api("POST", `/orgs/${o.orgId}/members`, { token: o.admin.token, body: { name: "Kiran Shah" } }));
+    const u = await addUser(o.orgId, o.code, o.admin.token, "member", member._id);
+    const second = await addUser(o.orgId, o.code, o.admin.token, "admin");
+    // one admin uses Gujarati, the other stays on English
+    const me = await ok(api("PATCH", "/auth/me", { token: o.admin.token, body: { language: "gu" } }));
+    expect(me.language).toBe("gu");
+    const guPhone = token();
+    const enPhone = token();
+    await ok(api("POST", "/me/push-devices", { token: o.admin.token, body: { token: guPhone, platform: "android" } }));
+    await ok(api("POST", "/me/push-devices", { token: second.token, body: { token: enPhone, platform: "ios" } }));
+
+    // a member reports a donation: both admins hear about it
+    await ok(api("POST", `/orgs/${o.orgId}/me/payment-requests`, { token: u.token, body: { purpose: "other", amount: "500", date: new Date().toISOString().slice(0, 10), method: "cash", notes: "Navratri", idempotencyKey: uniq("req") } }));
+    await wait(300);
+
+    const gu = sentPushes.find((p) => p.token === guPhone && p.body.includes("Navratri"))!;
+    expect(gu.title).toBe("Kiran Shah એ ચુકવણી કરી · Jay Ambe Mandal");
+    expect(gu.body).toBe("“Navratri” માટે રોકડ માં ₹500.00. ખાતરી કરીને રસીદ આપો.");
+    const en = sentPushes.find((p) => p.token === enPhone && p.body.includes("Navratri"))!;
+    expect(en.title).toBe("Kiran Shah says they paid · Jay Ambe Mandal");
+
+    // the in-app list follows the language too — and changes when they switch
+    const listGu = await ok(api("GET", `/notifications?orgId=${o.orgId}`, { token: o.admin.token }));
+    expect(listGu.items.find((n: any) => n.type === "payment.request").title).toBe("Kiran Shah એ ચુકવણી કરી");
+    await ok(api("PATCH", "/auth/me", { token: o.admin.token, body: { language: "hi" } }));
+    const listHi = await ok(api("GET", `/notifications?orgId=${o.orgId}`, { token: o.admin.token }));
+    expect(listHi.items.find((n: any) => n.type === "payment.request").title).toBe("Kiran Shah ने भुगतान किया");
+    expect(listHi.items.find((n: any) => n.type === "membership.request").title).toBe("जुड़ने की नई माँग");
+    expect((await api("PATCH", "/auth/me", { token: o.admin.token, body: { language: "fr" } })).status).toBe(422);
   });
 });

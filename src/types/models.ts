@@ -33,6 +33,8 @@ export interface UserDoc extends Timestamps {
   lastLoginAt?: Date;
   /** Bumped on password change / deactivation; sessions issued before are invalid. */
   sessionVersion: number;
+  /** Language picked in the app (English / ગુજરાતી / हिन्दी): notifications and pushes use it. */
+  language?: "en" | "gu" | "hi";
 }
 
 export interface SessionDoc {
@@ -728,6 +730,11 @@ export interface NotificationDoc {
   createdAt: Date;
   /** When it was sent as a phone push (null/absent = not yet). */
   pushedAt?: Date | null;
+  /**
+   * What happened and its details (notification-copy.ts). When set, the title and body are
+   * written in the reader's language each time; `title` / `body` keep the English for anything else.
+   */
+  copy?: { key: string; params: Record<string, string | number | null | undefined> };
 }
 
 /** A phone (iOS / Android app) that receives push notifications for a user. */

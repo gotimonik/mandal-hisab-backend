@@ -22,6 +22,7 @@ import { rateLimit } from "@/lib/rate-limit";
 import { notify } from "./notification.service";
 import { emailConfigured, sendEmail } from "./email.service";
 import { esc, renderEmail } from "./email-templates";
+import { copy } from "./notification-copy";
 
 export { DEFAULT_EXPENSE_CATEGORIES, defaultSettings } from "@/lib/org-defaults";
 
@@ -341,8 +342,7 @@ export async function requestToJoin(auth: AuthContext, input: z.infer<typeof Joi
       organizationId: org._id,
       userId: a.userId,
       type: "membership.request",
-      title: "New join request",
-      body: `${auth.user.name} has requested to join ${org.name}.`,
+      copy: copy("membership.request", { name: auth.user.name }, org.settings.currency),
       link: `/org/${org._id}/users`,
       dedupeKey: `join:${org._id}:${auth.user._id}:${Date.now()}`,
     });
@@ -525,8 +525,7 @@ export async function updateMembership(ctx: OrgContext, membershipId: ObjectId, 
       organizationId: ctx.orgId,
       userId: m.userId,
       type: `membership.${input.action}`,
-      title: input.action === "approve" ? "Membership approved" : "Membership request declined",
-      body: input.action === "approve" ? `You can now access ${ctx.org.name}.` : `Your request to join ${ctx.org.name} was declined.`,
+      copy: copy(input.action === "approve" ? "membership.approve" : "membership.reject", {}, ctx.org.settings.currency),
       link: input.action === "approve" ? `/org/${ctx.orgId}` : "/onboarding",
       dedupeKey: `membership:${m._id}:${input.action}:${Date.now()}`,
     });
@@ -800,8 +799,7 @@ export async function platformUpdateOrganization(auth: AuthContext, orgId: Objec
       organizationId: orgId,
       userId: a.userId,
       type: `organization.${input.action}`,
-      title: `Organization ${t.to}`,
-      body: `${org.name} is now ${t.to}${input.reason ? `: ${input.reason}` : ""}.`,
+      copy: copy("organization.status", { status: t.to, reason: input.reason ?? "" }, org.settings.currency),
       dedupeKey: `org-status:${orgId}:${t.to}:${Date.now()}`,
     });
   }

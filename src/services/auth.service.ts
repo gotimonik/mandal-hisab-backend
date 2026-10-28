@@ -41,6 +41,7 @@ export function publicUser(u: UserDoc) {
     emailVerified: !!u.emailVerifiedAt,
     isPlatformAdmin: u.isPlatformAdmin,
     status: u.status,
+    language: u.language ?? null,
     createdAt: u.createdAt,
   };
 }
@@ -267,13 +268,14 @@ export async function changePassword(auth: AuthContext, current: string, next: s
   return { ok: true };
 }
 
-export const ProfileSchema = z.object({ name: z.string().trim().min(2).max(100).optional(), phone });
+export const ProfileSchema = z.object({ name: z.string().trim().min(2).max(100).optional(), phone, language: z.enum(["en", "gu", "hi"]).optional() });
 
 export async function updateProfile(auth: AuthContext, input: z.infer<typeof ProfileSchema>) {
   const c = await cols();
   const $set: Partial<UserDoc> = { updatedAt: new Date() };
   if (input.name) $set.name = input.name;
   if (input.phone !== undefined) $set.phone = input.phone;
+  if (input.language) $set.language = input.language;
   const u = await c.users.findOneAndUpdate({ _id: auth.user._id }, { $set }, { returnDocument: "after" });
   return publicUser(u!);
 }

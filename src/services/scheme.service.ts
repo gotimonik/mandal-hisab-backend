@@ -15,6 +15,7 @@ import type {
 import { dateOnly, money, optText, reason } from "@/validators/common";
 import { amountFor, deriveStatus, generatePeriods, installmentCount, type ScheduleParams } from "./schedule";
 import { notifyMember } from "./notification.service";
+import { copy } from "./notification-copy";
 
 const FREQUENCIES = [
   "weekly",
@@ -443,8 +444,7 @@ export async function enrollMembers(ctx: OrgContext, schemeId: ObjectId, input: 
     installments += await generateForEnrollment(ctx.org, s, enrollment, horizon, ctx.user._id);
     await notifyMember(ctx.orgId, memberId, {
       type: "scheme.assigned",
-      title: "New hapta scheme",
-      body: `You have been enrolled in ${s.name}.`,
+      copy: copy("scheme.assigned", { scheme: s.name, amountPaise: s.amountPaise }, ctx.org.settings.currency),
       link: `/org/${ctx.orgId}/my`,
       dedupeKey: `scheme-assign:${schemeId}:${memberId}`,
     });
@@ -859,8 +859,7 @@ export async function installmentAction(ctx: OrgContext, id: ObjectId, input: z.
   if (input.action === "set_due_date" || input.action === "set_amount") {
     await notifyMember(ctx.orgId, i.memberId, {
       type: "installment.changed",
-      title: "Payment schedule updated",
-      body: `${i.periodLabel}: ${input.action === "set_due_date" ? "due date changed" : "amount changed"} (${input.reason}).`,
+      copy: copy("installment.changed", { scheme: (await c.haptaSchemes.findOne({ _id: i.schemeId }, { projection: { name: 1 } }))?.name ?? "", period: i.periodLabel, change: input.action === "set_due_date" ? "due_date" : "amount", reason: input.reason }, ctx.org.settings.currency),
       link: `/org/${ctx.orgId}/my`,
       dedupeKey: `inst-change:${id}:${now.getTime()}`,
     });

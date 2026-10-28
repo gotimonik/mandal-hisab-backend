@@ -15,6 +15,7 @@ import { MEMBER_FUNDS, MEMBER_INTEREST_EXPENSE, postTransaction } from "./ledger
 import { balancesAsOf, postMemberEntry } from "./member-ledger.service";
 import { firstOfMonth, lastOfMonth, month, monthOf } from "./monthly.service";
 import { notifyMember } from "./notification.service";
+import { copy } from "./notification-copy";
 
 /**
  * Monthly interest (વ્યાજ) credited to members.
@@ -207,7 +208,7 @@ export async function finalizeInterest(ctx: OrgContext, input: z.infer<typeof Fi
       return doc;
     });
     for (const l of lines) {
-      await notifyMember(ctx.orgId, l.row.memberId, { type: "interest.credited", title: "Interest credited", body: `${formatMoney(l.amount, ctx.org.settings.currency)} interest for ${input.period} was added to your balance.`, link: `/org/${ctx.orgId}/my`, dedupeKey: `interest:${input.period}` });
+      await notifyMember(ctx.orgId, l.row.memberId, { type: "interest.credited", copy: copy("interest.credited", { amountPaise: l.amount, periodMonth: input.period }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/my`, dedupeKey: `interest:${input.period}` });
     }
     return { run, duplicate: false };
   } catch (e) {

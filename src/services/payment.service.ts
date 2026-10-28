@@ -14,6 +14,7 @@ import { INCOME_KEYS, MEMBER_FUNDS, faKey, postTransaction, reverseTransaction, 
 import { cancelReceiptFor, issueReceipt } from "./receipt.service";
 import { requireAccount } from "./account.service";
 import { notifyMember, notifyRoles } from "./notification.service";
+import { copy } from "./notification-copy";
 
 export const RecordPaymentSchema = z
   .object({
@@ -198,8 +199,7 @@ export async function recordPayment(ctx: OrgContext, input: z.infer<typeof Recor
     else
       await notifyRoles(ctx.orgId, ["admin"], {
         type: "payment.pending",
-        title: "Payment awaiting verification",
-        body: `${formatMoney(doc.amountPaise, ctx.org.settings.currency)} from ${doc.payerName ?? "a member"} needs verification.`,
+        copy: copy("payment.pending", { amountPaise: doc.amountPaise, payer: doc.payerName ?? "a member" }, ctx.org.settings.currency),
         link: `/org/${ctx.orgId}/collections?status=pending`,
         dedupeKey: `payment-pending:${doc._id}`,
       });
@@ -265,8 +265,7 @@ export async function submitMemberPaymentRequest(ctx: OrgContext, input: z.infer
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "payment.member_request", entityType: "payment", entityId: doc._id, after: { amountPaise: doc.amountPaise } });
   await notifyRoles(ctx.orgId, ["admin", "manager"], {
     type: "payment.request",
-    title: "Payment submitted by member",
-    body: `${member?.name ?? "A member"} reported a payment of ${formatMoney(doc.amountPaise, ctx.org.settings.currency)} for ${isHapta ? "monthly hapta" : input.notes} (${doc.method}${doc.reference ? ` ref ${doc.reference}` : ""}).`,
+    copy: copy("payment.request", { member: member?.name ?? "A member", amountPaise: doc.amountPaise, purpose: isHapta ? "hapta" : "other", note: input.notes ?? "", scheme: schemeId ? ((await c.haptaSchemes.findOne({ _id: schemeId }, { projection: { name: 1 } }))?.name ?? "") : "", method: doc.method }, ctx.org.settings.currency),
     link: `/org/${ctx.orgId}/collections?status=pending`,
     dedupeKey: `payment-request:${doc._id}`,
   });
@@ -420,8 +419,7 @@ async function verifyInSession(ctx: OrgContext, paymentId: ObjectId, accountOver
 async function afterVerify(ctx: OrgContext, p: PaymentDoc) {
   await notifyMember(ctx.orgId, p.memberId, {
     type: "payment.verified",
-    title: "Payment received",
-    body: `Your payment of ${formatMoney(p.amountPaise, ctx.org.settings.currency)} has been verified. Your receipt is ready.`,
+    copy: copy("payment.verified", { amountPaise: p.amountPaise }, ctx.org.settings.currency),
     link: p.receiptId ? `/org/${ctx.orgId}/receipts/${p.receiptId}` : `/org/${ctx.orgId}/my`,
     dedupeKey: `payment-verified:${p._id}`,
   });
@@ -444,8 +442,7 @@ export async function rejectPayment(ctx: OrgContext, id: ObjectId, reasonText: s
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "payment.reject", entityType: "payment", entityId: id, reason: reasonText });
   await notifyMember(ctx.orgId, r.memberId, {
     type: "payment.rejected",
-    title: "Payment not verified",
-    body: `Your payment of ${formatMoney(r.amountPaise, ctx.org.settings.currency)} could not be verified: ${reasonText}`,
+    copy: copy("payment.rejected", { amountPaise: r.amountPaise, reason: reasonText }, ctx.org.settings.currency),
     link: `/org/${ctx.orgId}/my`,
     dedupeKey: `payment-rejected:${id}`,
   });

@@ -11,6 +11,7 @@ import { dateOnly, idempotencyKey, money, optText, rateString } from "@/validato
 import { balanceOf } from "./account.service";
 import { fundLoanTotals, giveFundLoan } from "./fund-loan.service";
 import { notifyMember, notifyRoles } from "./notification.service";
+import { copy } from "./notification-copy";
 
 /**
  * Members ask for upad from the app; an admin approves (which gives the upad) or rejects.
@@ -79,8 +80,7 @@ export async function requestUpad(ctx: OrgContext, input: z.infer<typeof UpadReq
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "upadRequest.create", entityType: "upadRequest", entityId: doc._id, after: { memberId, amountPaise: input.amount } });
   await notifyRoles(ctx.orgId, ["admin"], {
     type: "upadRequest.new",
-    title: "Upad request",
-    body: `${member.name} asked for ${formatMoney(input.amount, ctx.org.settings.currency)} upad${input.purpose ? ` — ${input.purpose}` : ""}.`,
+    copy: copy("upadRequest.new", { member: member.name, amountPaise: input.amount, purpose: input.purpose ?? "" }, ctx.org.settings.currency),
     link: `/org/${ctx.orgId}/fund-loans`,
     dedupeKey: `upadreq:${doc._id}`,
   });
@@ -167,6 +167,6 @@ export async function rejectUpadRequest(ctx: OrgContext, id: ObjectId, reasonTex
   const r = await c.upadRequests.updateOne({ _id: id, status: "pending" }, { $set: { status: "rejected", decisionReason: reasonText, decidedBy: ctx.user._id, decidedAt: new Date(), updatedAt: new Date() } });
   if (r.modifiedCount !== 1) throw conflict(`This request is already ${req.status}`);
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "upadRequest.reject", entityType: "upadRequest", entityId: id, reason: reasonText });
-  await notifyMember(ctx.orgId, req.memberId, { type: "upadRequest.rejected", title: "Upad request not approved", body: `Your request for ${formatMoney(req.amountPaise, ctx.org.settings.currency)} was not approved: ${reasonText}`, link: `/org/${ctx.orgId}/my`, dedupeKey: `upadreq-rej:${id}` });
+  await notifyMember(ctx.orgId, req.memberId, { type: "upadRequest.rejected", copy: copy("upadRequest.rejected", { amountPaise: req.amountPaise, reason: reasonText }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/my`, dedupeKey: `upadreq-rej:${id}` });
   return { ok: true };
 }

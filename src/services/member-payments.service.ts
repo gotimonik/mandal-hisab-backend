@@ -11,6 +11,7 @@ import { dateOnly, idempotencyKey, money, optText } from "@/validators/common";
 import { listFundLoans, receiveFundLoanPayment } from "./fund-loan.service";
 import { lastOfMonth, monthOf } from "./monthly.service";
 import { notifyMember, notifyRoles } from "./notification.service";
+import { copy } from "./notification-copy";
 
 /**
  * "I have paid" — what a member can report paying, and the upad side of it.
@@ -142,8 +143,7 @@ export async function submitUpadClaim(ctx: OrgContext, input: z.infer<typeof Upa
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "upadClaim.submit", entityType: "upadPaymentClaim", entityId: doc._id, after: { loanId: loan._id, interestPaise: doc.interestPaise, principalPaise: doc.principalPaise } });
   await notifyRoles(ctx.orgId, ["admin", "manager"], {
     type: "upadClaim.new",
-    title: "Upad payment to verify",
-    body: `${member?.name ?? "A member"} reported paying ${[doc.interestPaise ? `${formatMoney(doc.interestPaise, ctx.org.settings.currency)} interest` : "", doc.principalPaise ? `${formatMoney(doc.principalPaise, ctx.org.settings.currency)} upad returned` : ""].filter(Boolean).join(" + ")} on ${loan.number} (${doc.method}${doc.reference ? ` ref ${doc.reference}` : ""}).`,
+    copy: copy("upadClaim.new", { member: member?.name ?? "A member", interestPaise: doc.interestPaise, principalPaise: doc.principalPaise, loan: loan.number, method: doc.method }, ctx.org.settings.currency),
     link: `/org/${ctx.orgId}/fund-loans`,
     dedupeKey: `upadclaim:${doc._id}`,
   });
@@ -221,7 +221,7 @@ export async function settleUpadClaim(ctx: OrgContext, id: ObjectId, paymentIdHi
   );
   if (r.modifiedCount !== 1) throw conflict("This payment was just changed — refresh and try again");
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "upadClaim.settle", entityType: "upadPaymentClaim", entityId: id, after: { paymentId: payment._id } });
-  await notifyMember(ctx.orgId, claim.memberId, { type: "upadClaim.verified", title: "Upad payment verified", body: `Your payment of ${formatMoney(claim.interestPaise + claim.principalPaise, ctx.org.settings.currency)} was received by the Mandal. Receipt issued.`, link: `/org/${ctx.orgId}/receipts/${payment.receiptId}`, dedupeKey: `upadclaim-ok:${id}` });
+  await notifyMember(ctx.orgId, claim.memberId, { type: "upadClaim.verified", copy: copy("upadClaim.verified", { amountPaise: claim.interestPaise + claim.principalPaise }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/receipts/${payment.receiptId}`, dedupeKey: `upadclaim-ok:${id}` });
   return { ok: true, paymentId: payment._id, receiptId: payment.receiptId };
 }
 
@@ -274,7 +274,7 @@ export async function verifyUpadClaim(ctx: OrgContext, id: ObjectId, input: z.in
     });
     await c.upadPaymentClaims.updateOne({ _id: id }, { $set: { paymentId: payment._id, updatedAt: new Date() } });
     await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "upadClaim.verify", entityType: "upadPaymentClaim", entityId: id, after: { paymentId: payment._id } });
-    await notifyMember(ctx.orgId, claim.memberId, { type: "upadClaim.verified", title: "Upad payment verified", body: `Your payment of ${formatMoney(claim.interestPaise + claim.principalPaise, ctx.org.settings.currency)} was verified. Receipt issued.`, link: `/org/${ctx.orgId}/receipts/${payment.receiptId}`, dedupeKey: `upadclaim-ok:${id}` });
+    await notifyMember(ctx.orgId, claim.memberId, { type: "upadClaim.verified", copy: copy("upadClaim.verified", { amountPaise: claim.interestPaise + claim.principalPaise }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/receipts/${payment.receiptId}`, dedupeKey: `upadclaim-ok:${id}` });
     return { ok: true, paymentId: payment._id, receiptId: payment.receiptId };
   } catch (e) {
     await c.upadPaymentClaims.updateOne({ _id: id, status: "verified", paymentId: null }, { $set: { status: "pending", decidedBy: null, decidedAt: null, updatedAt: new Date() } });
@@ -291,6 +291,6 @@ export async function rejectUpadClaim(ctx: OrgContext, id: ObjectId, reasonText:
   );
   if (!claim) throw conflict("Only payments waiting for verification can be rejected");
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "upadClaim.reject", entityType: "upadPaymentClaim", entityId: id, reason: reasonText });
-  await notifyMember(ctx.orgId, claim.memberId, { type: "upadClaim.rejected", title: "Upad payment not verified", body: `Your payment of ${formatMoney(claim.interestPaise + claim.principalPaise, ctx.org.settings.currency)} could not be verified: ${reasonText}`, link: `/org/${ctx.orgId}/my?tab=upad`, dedupeKey: `upadclaim-rej:${id}` });
+  await notifyMember(ctx.orgId, claim.memberId, { type: "upadClaim.rejected", copy: copy("upadClaim.rejected", { amountPaise: claim.interestPaise + claim.principalPaise, reason: reasonText }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/my?tab=upad`, dedupeKey: `upadclaim-rej:${id}` });
   return { ok: true };
 }
