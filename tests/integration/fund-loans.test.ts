@@ -215,6 +215,9 @@ describe("members requesting upad", () => {
     expect(mine.items.map((x: any) => x.status)).toEqual(["approved", "rejected", "cancelled"]);
     expect(mine.items[0].loanId).toBe(loans.items[0]._id);
     expect(mine.availablePaise).toBe(50_000);
+    // the ₹1,500 lent out is still part of the fund, just not cash in hand
+    expect(mine.upadOutPaise).toBe(150_000);
+    expect(mine.fundPaise).toBe(200_000);
   });
 
   it("approval re-checks the cash; if it's no longer there the request stays pending", async () => {

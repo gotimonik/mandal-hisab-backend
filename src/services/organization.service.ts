@@ -21,6 +21,7 @@ import { createMember } from "./member.service";
 import { rateLimit } from "@/lib/rate-limit";
 import { notify } from "./notification.service";
 import { emailConfigured, sendEmail } from "./email.service";
+import { esc, renderEmail } from "./email-templates";
 
 export { DEFAULT_EXPENSE_CATEGORIES, defaultSettings } from "@/lib/org-defaults";
 
@@ -541,7 +542,6 @@ export const InviteSchema = z.object({
   memberId: z.string().optional(),
 });
 
-const esc = (v: string) => v.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]!);
 
 /**
  * Invite someone by email to sign in to this Mandal, optionally linked to their member record.
@@ -552,10 +552,10 @@ const esc = (v: string) => v.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "
 export async function createInvitation(ctx: OrgContext, input: z.infer<typeof InviteSchema>) {
   await rateLimit(`invite:${ctx.orgId}`, 100, 86400);
   const c = await cols();
-  let member: { _id: ObjectId; name: string; userId?: ObjectId | null } | null = null;
+  let member: { _id: ObjectId; name: string; membershipNumber?: string; userId?: ObjectId | null } | null = null;
   if (input.memberId) {
     if (!ObjectId.isValid(input.memberId)) throw notFound("Member");
-    member = await c.members.findOne({ _id: new ObjectId(input.memberId), organizationId: ctx.orgId }, { projection: { name: 1, userId: 1 } });
+    member = await c.members.findOne({ _id: new ObjectId(input.memberId), organizationId: ctx.orgId }, { projection: { name: 1, membershipNumber: 1, userId: 1 } });
     if (!member) throw notFound("Member");
     if (member.userId) throw conflict(`${member.name} already has an app login linked`);
   }
@@ -587,23 +587,33 @@ export async function createInvitation(ctx: OrgContext, input: z.infer<typeof In
   // new people register first (email pre-filled), then land on the invitation
   const registerQs = new URLSearchParams({ email: input.email, ...(member ? { name: member.name } : {}), next: acceptPath });
   const link = invitee ? `${base}${acceptPath}` : `${base}/register?${registerQs.toString()}`;
-  const greeting = invitee?.name ? `Namaste ${invitee.name.split(" ")[0]},` : member ? `Namaste ${member.name.split(" ")[0]},` : "Namaste,";
-  const steps = invitee
-    ? `Sign in with ${input.email} and tap "Join the Mandal".`
-    : `Create your MandalHisab account with this email (${input.email}) and set your own password — you'll join the Mandal straight away.`;
-  const emailed = await sendEmail({
-    to: input.email,
-    subject: `${ctx.user.name} invited you to ${ctx.org.name} on MandalHisab`,
-    text: `${greeting}\n\n${ctx.user.name} invited you to join ${ctx.org.name} on MandalHisab${member ? " to see your savings, hapta and upad" : ""}.\n\n${steps}\n\nOpen: ${link}\n\nThis invitation expires in 7 days.`,
-    html: `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#1f1d2e">
-<p style="font-size:20px;font-weight:700;margin:0 0 16px;color:#4f46e5">MandalHisab</p>
-<p>${esc(greeting)}</p>
-<p><b>${esc(ctx.user.name)}</b> invited you to join <b>${esc(ctx.org.name)}</b>${member ? " to see your savings, hapta and upad" : ""}.</p>
-<p>${esc(steps)}</p>
-<p style="margin:24px 0"><a href="${esc(link)}" style="background:#4f46e5;color:#fff;text-decoration:none;padding:12px 20px;border-radius:12px;font-weight:600;display:inline-block">${invitee ? "Join the Mandal" : "Create account &amp; join"}</a></p>
-<p style="font-size:13px;color:#6b6880">This invitation expires in 7 days. If the button doesn't work, open: ${esc(link)}</p>
-</div>`,
+  const first = (n: string) => n.split(" ")[0];
+  const greeting = invitee?.name ? `Namaste ${first(invitee.name)},` : member ? `Namaste ${first(member.name)},` : "Namaste,";
+  const roleName = { admin: "Admin", manager: "Manager", member: "Member" }[input.role as string] ?? input.role;
+  const mail = renderEmail({
+    preheader: `${ctx.user.name} invited you to join ${ctx.org.name} on MandalHisab.`,
+    heading: `You're invited to ${ctx.org.name}`,
+    greeting,
+    paragraphs: [
+      {
+        html: `<b>${esc(ctx.user.name)}</b> invited you to join <b>${esc(ctx.org.name)}</b> on MandalHisab${member ? " — so you can see your own savings, hapta and upad any time" : ""}.`,
+        text: `${ctx.user.name} invited you to join ${ctx.org.name} on MandalHisab${member ? " — so you can see your own savings, hapta and upad any time" : ""}.`,
+      },
+      invitee
+        ? `Sign in with ${input.email} and tap “Join the Mandal”.`
+        : `Create your account with this email (${input.email}) and choose your own password — you'll join the Mandal straight away, no extra verification needed.`,
+    ],
+    details: [
+      { label: "Mandal", value: ctx.org.name },
+      { label: "Invited by", value: ctx.user.name },
+      { label: "Joining as", value: roleName },
+      ...(member ? [{ label: "Member record", value: `${member.name}${member.membershipNumber ? ` (${member.membershipNumber})` : ""}` }] : []),
+    ],
+    button: { label: invitee ? "Join the Mandal" : "Create account & join", url: link },
+    note: "This invitation expires in 7 days. If you weren't expecting it, you can ignore this email.",
+    reason: `You're receiving this because ${ctx.user.name} invited ${input.email} to a Mandal on MandalHisab.`,
   });
+  const emailed = await sendEmail({ to: input.email, subject: `${ctx.user.name} invited you to ${ctx.org.name} on MandalHisab`, ...mail });
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "invitation.create", entityType: "invitation", entityId: invitationId, after: { email: input.email, role: input.role, memberId: member?._id ?? null } });
   return { ok: true, invitationId, inviteLink: link, existingUser: !!invitee, emailed, emailConfigured: emailConfigured() };
 }

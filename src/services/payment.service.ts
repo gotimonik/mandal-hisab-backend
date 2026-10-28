@@ -220,9 +220,16 @@ export async function submitMemberPaymentRequest(ctx: OrgContext, input: z.infer
   if (!memberId) throw forbidden("Your login is not linked to a member record yet. Please contact your Mandal admin.");
   const existing = await findByKey(ctx.orgId, input.idempotencyKey);
   if (existing) return { payment: existing, duplicate: true };
-  const schemeId = input.schemeId && ObjectId.isValid(input.schemeId) ? new ObjectId(input.schemeId) : null;
   const isHapta = input.purpose === "hapta";
   if (!isHapta && !input.notes) throw badRequest("Say what this payment is for");
+  let schemeId: ObjectId | null = null;
+  if (isHapta && input.schemeId) {
+    if (!ObjectId.isValid(input.schemeId)) throw notFound("Scheme");
+    schemeId = new ObjectId(input.schemeId);
+    // only a scheme this member is actually in
+    const inScheme = await (await cols()).installments.findOne({ organizationId: ctx.orgId, memberId, schemeId, state: "active" }, { projection: { _id: 1 } });
+    if (!inScheme) throw notFound("Scheme");
+  }
   const allocations = isHapta ? await autoAllocate(ctx.orgId, memberId, input.amount, schemeId, undefined, ctx.org.settings.currency) : [];
   const c = await cols();
   const member = await c.members.findOne({ _id: memberId, organizationId: ctx.orgId });

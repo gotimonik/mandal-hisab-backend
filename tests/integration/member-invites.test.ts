@@ -34,7 +34,9 @@ describe("member invitations by email", () => {
     expect(mail?.html).toContain("Create account");
 
     // they register with that email and open the link
-    const reg = await ok(api("POST", "/auth/register", { body: { name: "Nayan Patel", email, password: "secret123" } }));
+    const reg = await ok(api("POST", "/auth/register", { body: { name: "Nayan Patel", email, password: "secret123", inviteToken: tokenFrom(m.invitation.inviteLink) } }));
+    expect(reg.emailVerified).toBe(true); // the invitation link proved they own the email
+    expect((await lastMailTo(email))?.subject).not.toContain("Verify"); // no separate verification email
     const { token } = await ok<{ token: string }>(api("POST", "/auth/login", { body: { email, password: "secret123" } }));
     const me = await ok(api("GET", "/auth/me", { token }));
     expect(me.invitations.map((i: any) => i.organization._id)).toContain(o.orgId);

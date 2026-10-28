@@ -10,6 +10,7 @@ import { dateOnly } from "@/validators/common";
 import { FUND_LOANS, accountBalances, accountClass, accountLabels, faKey, normalBalance } from "./ledger.service";
 import { fundLoanTotals } from "./fund-loan.service";
 import { loanSummary } from "./loan.service";
+import { memberSchemes } from "./scheme.service";
 
 export const ReportQuery = z.object({
   from: dateOnly.optional(),
@@ -70,6 +71,7 @@ export async function adminDashboard(ctx: OrgContext) {
   const fy = financialYear(today, ctx.org.settings.financialYearStartMonth);
   const monthStart = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
   const chartStart = utcAddMonths(monthStart, -11);
+  const nextMonthStart = utcAddMonths(monthStart, 1);
   const orgId = ctx.orgId;
 
   // Independent queries are started together and awaited once (one round trip instead of many).
@@ -122,6 +124,7 @@ export async function adminDashboard(ctx: OrgContext) {
       upcoming: { amt: number; n: number }[];
       upcomingList: { _id: ObjectId; dueDate: Date; amountPaise: number; paidPaise: number; periodLabel: string; memberId: ObjectId; schemeId: ObjectId }[];
       fyPerf: { due: number; paid: number }[];
+      byScheme: { _id: ObjectId; members: number; monthDue: number; monthPaid: number; outstanding: number; ahead: number; collected: number; planned: number }[];
     }>([
       { $match: { organizationId: orgId, state: "active" } },
       {
@@ -131,6 +134,22 @@ export async function adminDashboard(ctx: OrgContext) {
           upcoming: [{ $match: { dueDate: { $gt: today, $lte: utcAddDays(today, 30) } } }, { $group: { _id: null, amt: { $sum: owedExpr }, n: { $sum: 1 } } }],
           upcomingList: [{ $match: { dueDate: { $gt: today, $lte: utcAddDays(today, 30) }, $expr: { $gt: [owedExpr, 0] } } }, { $sort: { dueDate: 1 } }, { $limit: 10 }],
           fyPerf: [{ $match: { dueDate: { $gte: fy.start, $lte: today } } }, { $group: { _id: null, due: { $sum: "$amountPaise" }, paid: { $sum: "$paidPaise" } } }],
+          // one row per scheme for the dashboard's "Schemes" section
+          byScheme: [
+            {
+              $group: {
+                _id: "$schemeId",
+                memberIds: { $addToSet: "$memberId" },
+                monthDue: { $sum: { $cond: [{ $and: [{ $gte: ["$dueDate", monthStart] }, { $lt: ["$dueDate", nextMonthStart] }] }, "$amountPaise", 0] } },
+                monthPaid: { $sum: { $cond: [{ $and: [{ $gte: ["$dueDate", monthStart] }, { $lt: ["$dueDate", nextMonthStart] }] }, "$paidPaise", 0] } },
+                outstanding: { $sum: { $cond: [{ $and: [{ $lte: ["$dueDate", today] }, { $gt: [owedExpr, 0] }] }, owedExpr, 0] } },
+                ahead: { $sum: { $cond: [{ $gt: ["$dueDate", today] }, "$paidPaise", 0] } },
+                collected: { $sum: "$paidPaise" },
+                planned: { $sum: "$amountPaise" },
+              },
+            },
+            { $project: { members: { $size: "$memberIds" }, monthDue: 1, monthPaid: 1, outstanding: 1, ahead: 1, collected: 1, planned: 1 } },
+          ],
         },
       },
     ])
@@ -200,7 +219,7 @@ export async function adminDashboard(ctx: OrgContext) {
   ] = await Promise.all([
     ledgerP,
     instP,
-    c.haptaSchemes.find({ organizationId: orgId }, { projection: { name: 1, graceDays: 1, status: 1 } }).toArray(),
+    c.haptaSchemes.find({ organizationId: orgId }, { projection: { name: 1, graceDays: 1, status: 1, frequency: 1, amountPaise: 1, createdAt: 1 } }).toArray(),
     loanP,
     mhP,
     iaP,
@@ -319,6 +338,25 @@ export async function adminDashboard(ctx: OrgContext) {
     accounts: accounts.map((a) => ({ _id: a._id, name: a.name, type: a.type, isActive: a.isActive, balancePaise: byKey(ledgerFacet.allTime, faKey(a._id)) })),
     pending: { payments: pendingPayments, expenses: pendingExpenses, memberships: pendingMemberships, loans: loanAgg?.applied ?? 0, upadRequests: pendingUpadRequests, upadPayments: pendingUpadPayments },
     collectionPerformance: { duePaise: perf.due, collectedPaise: perf.paid, percent: perf.due ? Math.round((perf.paid / perf.due) * 1000) / 10 : 100 },
+    schemes: schemes
+      .filter((s) => s.status === "active")
+      .map((s) => {
+        const r = instFacet.byScheme.find((x) => x._id?.equals(s._id));
+        return {
+          _id: s._id,
+          name: s.name,
+          frequency: s.frequency,
+          amountPaise: s.amountPaise,
+          members: r?.members ?? 0,
+          monthDuePaise: r?.monthDue ?? 0,
+          monthPaidPaise: r?.monthPaid ?? 0,
+          outstandingPaise: r?.outstanding ?? 0,
+          paidAheadPaise: r?.ahead ?? 0,
+          collectedPaise: r?.collected ?? 0,
+          plannedPaise: r?.planned ?? 0,
+        };
+      })
+      .sort((a, b) => b.members - a.members || a.name.localeCompare(b.name)),
     upcomingDues: instFacet.upcomingList.map((u) => ({ ...u, memberName: mm.get(u.memberId.toHexString()) ?? "", schemeName: sm.get(u.schemeId.toHexString()) ?? "" })),
     recentTransactions: recent,
     recentWithdrawals,
@@ -360,6 +398,7 @@ export async function managerDashboard(ctx: OrgContext) {
     accounts: full.accounts,
     pending: full.pending,
     collectionPerformance: full.collectionPerformance,
+    schemes: full.schemes,
     upcomingDues: full.upcomingDues,
     recentTransactions: full.recentTransactions,
     recentWithdrawals: full.recentWithdrawals,
@@ -392,6 +431,8 @@ export async function memberDashboard(ctx: OrgContext) {
     },
     nextInstallment: next ? { _id: next._id, dueDate: next.dueDate, periodLabel: next.periodLabel, amountPaise: owed(next) } : null,
     savings: await memberSavingsSummary(ctx.orgId, memberId),
+    /** each hapta scheme the member is in, with the whole schedule */
+    schemes: await memberSchemes(ctx, memberId),
     fundLoans: await fundLoanTotals(ctx.org, memberId),
     /** what this member pays each month: the hapta × their shares */
     monthlyHaptaPaise: ctx.org.settings.monthlyHapta ? ctx.org.settings.monthlyHapta.amountPaise * (member?.haptaShares ?? 1) : null,

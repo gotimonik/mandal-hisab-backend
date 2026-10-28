@@ -9,7 +9,7 @@ import type { OrgContext } from "@/lib/auth";
 import type { UpadRequestDoc } from "@/types/models";
 import { dateOnly, idempotencyKey, money, optText, rateString } from "@/validators/common";
 import { balanceOf } from "./account.service";
-import { giveFundLoan } from "./fund-loan.service";
+import { fundLoanTotals, giveFundLoan } from "./fund-loan.service";
 import { notifyMember, notifyRoles } from "./notification.service";
 
 /**
@@ -90,11 +90,13 @@ export async function requestUpad(ctx: OrgContext, input: z.infer<typeof UpadReq
 export async function myUpadRequests(ctx: OrgContext) {
   const memberId = ctx.membership.memberId;
   const c = await cols();
-  const [items, available] = await Promise.all([
+  const [items, available, upad] = await Promise.all([
     memberId ? c.upadRequests.find({ organizationId: ctx.orgId, memberId }).sort({ createdAt: -1 }).limit(50).toArray() : Promise.resolve([] as UpadRequestDoc[]),
     availableCashPaise(ctx.orgId),
+    fundLoanTotals(ctx.org),
   ]);
-  return { items, availablePaise: available, allowRequests: ctx.org.settings.fundLoans.allowMemberRequests, linked: !!memberId };
+  // why "available" is less than the Mandal fund: upad already given out isn't cash in hand
+  return { items, availablePaise: available, upadOutPaise: upad.outstandingPaise, fundPaise: available + upad.outstandingPaise, allowRequests: ctx.org.settings.fundLoans.allowMemberRequests, linked: !!memberId };
 }
 
 export async function cancelMyUpadRequest(ctx: OrgContext, id: ObjectId) {
@@ -114,10 +116,12 @@ export async function listUpadRequests(ctx: OrgContext, q: z.infer<typeof UpadRe
   if (q.status !== "all") filter.status = q.status;
   const items = await c.upadRequests.find(filter).sort({ createdAt: -1 }).limit(200).toArray();
   const members = await c.members.find({ _id: { $in: items.map((i) => i.memberId) } }, { projection: { name: 1, membershipNumber: 1, balancePaise: 1 } }).toArray();
-  const available = await availableCashPaise(ctx.orgId);
+  const [available, upad] = await Promise.all([availableCashPaise(ctx.orgId), fundLoanTotals(ctx.org)]);
   return {
     items: items.map((i) => ({ ...i, member: members.find((m) => m._id.equals(i.memberId)) ?? null, withinAvailable: i.amountPaise <= available })),
     availablePaise: available,
+    upadOutPaise: upad.outstandingPaise,
+    fundPaise: available + upad.outstandingPaise,
   };
 }
 

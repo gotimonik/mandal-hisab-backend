@@ -202,24 +202,102 @@ export async function listSchemes(ctx: OrgContext) {
   }));
 }
 
-export async function getScheme(ctx: OrgContext, id: ObjectId) {
+type Inst = { sequence: number; periodLabel: string; dueDate: Date; amountPaise: number; paidPaise: number };
+
+/**
+ * Totals and month-by-month status for one member's schedule in one scheme — past and
+ * future months, so advance payments are visible. Used by the scheme page and "My schemes".
+ */
+export function scheduleProgress(installments: Inst[], today: Date) {
+  const t0 = today.getTime();
+  let duePaise = 0, paidPaise = 0, paidAheadPaise = 0, totalPaise = 0, totalPaidPaise = 0, paidCount = 0;
+  let paidThrough: string | null = null, gap = false;
+  let nextDue: { periodLabel: string; dueDate: Date; outstandingPaise: number } | null = null;
+  const schedule = installments.map((i) => {
+    const past = i.dueDate.getTime() <= t0;
+    const paidUp = i.paidPaise >= i.amountPaise;
+    totalPaise += i.amountPaise;
+    totalPaidPaise += i.paidPaise;
+    if (past) {
+      duePaise += i.amountPaise;
+      paidPaise += i.paidPaise;
+    } else paidAheadPaise += i.paidPaise;
+    if (paidUp) {
+      paidCount++;
+      if (!gap) paidThrough = i.periodLabel; // last month of the unbroken paid run from the start
+    } else {
+      gap = true;
+      nextDue ??= { periodLabel: i.periodLabel, dueDate: i.dueDate, outstandingPaise: i.amountPaise - i.paidPaise };
+    }
+    const status = paidUp ? "paid" : i.paidPaise > 0 ? "partially_paid" : i.dueDate.getTime() < t0 ? "overdue" : past ? "due" : "upcoming";
+    return { sequence: i.sequence, periodLabel: i.periodLabel, dueDate: i.dueDate, amountPaise: i.amountPaise, paidPaise: i.paidPaise, status };
+  });
+  return {
+    // up to today
+    duePaise,
+    paidPaise,
+    // the whole schedule
+    paidAheadPaise,
+    totalPaise,
+    totalPaidPaise,
+    installmentCount: installments.length,
+    paidCount,
+    paidThrough,
+    nextDue,
+    schedule,
+  };
+}
+
+/** A member's own schemes ("My schemes"), active ones first. */
+export async function memberSchemes(ctx: OrgContext, memberId: ObjectId) {
   const c = await cols();
-  const s = await getSchemeDoc(ctx, id);
   const today = todayIn(ctx.org.settings.timezone);
-  const enrollments = await c.memberSchemeEnrollments
-    .aggregate([
-      { $match: { organizationId: ctx.orgId, schemeId: id } },
-      { $lookup: { from: "members", localField: "memberId", foreignField: "_id", as: "member" } },
-      { $unwind: "$member" },
+  const rows = await c.memberSchemeEnrollments
+    .aggregate<{ _id: ObjectId; status: string; amountPaise?: number; startDate: Date; scheme: { _id: ObjectId; name: string; frequency: string; amountPaise: number; status: string; dueDay?: number }; installments: Inst[] }>([
+      { $match: { organizationId: ctx.orgId, memberId } },
+      { $lookup: { from: "haptaSchemes", localField: "schemeId", foreignField: "_id", as: "scheme" } },
+      { $unwind: "$scheme" },
       {
         $lookup: {
           from: "installments",
           let: { e: "$_id" },
           pipeline: [
-            { $match: { $expr: { $and: [{ $eq: ["$enrollmentId", "$$e"] }, { $eq: ["$state", "active"] }, { $lte: ["$dueDate", today] }] } } },
-            { $group: { _id: null, due: { $sum: "$amountPaise" }, paid: { $sum: "$paidPaise" } } },
+            { $match: { $expr: { $and: [{ $eq: ["$enrollmentId", "$$e"] }, { $eq: ["$state", "active"] }] } } },
+            { $sort: { sequence: 1 } },
+            { $project: { _id: 0, sequence: 1, periodLabel: 1, dueDate: 1, amountPaise: 1, paidPaise: 1 } },
           ],
-          as: "totals",
+          as: "installments",
+        },
+      },
+      { $project: { status: 1, amountPaise: 1, startDate: 1, "scheme._id": 1, "scheme.name": 1, "scheme.frequency": 1, "scheme.amountPaise": 1, "scheme.status": 1, "scheme.dueDay": 1, installments: 1 } },
+    ])
+    .toArray();
+  return rows
+    .map(({ installments, ...e }) => ({ ...e, ...scheduleProgress(installments, today) }))
+    .sort((a, b) => Number(b.status === "active") - Number(a.status === "active") || a.scheme.name.localeCompare(b.scheme.name));
+}
+
+export async function getScheme(ctx: OrgContext, id: ObjectId) {
+  const c = await cols();
+  const s = await getSchemeDoc(ctx, id);
+  const today = todayIn(ctx.org.settings.timezone);
+  type Row = { _id: ObjectId; status: string; amountPaise?: number; startDate: Date; lastSequence?: number; member: { _id: ObjectId; name: string; membershipNumber?: string }; installments: Inst[] };
+  const rows = await c.memberSchemeEnrollments
+    .aggregate<Row>([
+      { $match: { organizationId: ctx.orgId, schemeId: id } },
+      { $lookup: { from: "members", localField: "memberId", foreignField: "_id", as: "member" } },
+      { $unwind: "$member" },
+      {
+        // the member's whole schedule (past and future), so advance payments show too
+        $lookup: {
+          from: "installments",
+          let: { e: "$_id" },
+          pipeline: [
+            { $match: { $expr: { $and: [{ $eq: ["$enrollmentId", "$$e"] }, { $eq: ["$state", "active"] }] } } },
+            { $sort: { sequence: 1 } },
+            { $project: { _id: 0, sequence: 1, periodLabel: 1, dueDate: 1, amountPaise: 1, paidPaise: 1 } },
+          ],
+          as: "installments",
         },
       },
       {
@@ -231,13 +309,13 @@ export async function getScheme(ctx: OrgContext, id: ObjectId) {
           "member._id": 1,
           "member.name": 1,
           "member.membershipNumber": 1,
-          duePaise: { $ifNull: [{ $arrayElemAt: ["$totals.due", 0] }, 0] },
-          paidPaise: { $ifNull: [{ $arrayElemAt: ["$totals.paid", 0] }, 0] },
+          installments: 1,
         },
       },
       { $sort: { "member.name": 1 } },
     ])
     .toArray();
+  const enrollments = rows.map(({ installments, ...e }) => ({ ...e, ...scheduleProgress(installments, today) }));
   // Planned (scheme-level) schedule preview for the next 12 periods, before generation.
   const preview = generatePeriods(scheduleParams(s, ctx.org), horizonFor(ctx.org, today)).slice(0, 24).map((p) => ({
     ...p,
@@ -598,6 +676,112 @@ export async function listInstallments(ctx: OrgContext, q: z.infer<typeof Instal
       member: mm.get(i.memberId.toHexString()) ?? null,
     })),
     total,
+    page: q.page,
+    pageSize: q.pageSize,
+  };
+}
+
+export const InstallmentGroupQuery = z.object({
+  by: z.enum(["scheme", "member"]),
+  schemeId: z.string().optional(),
+  memberId: z.string().optional(),
+  from: dateOnly.optional(),
+  to: dateOnly.optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(30),
+});
+
+type GroupRow = {
+  _id: ObjectId;
+  x?: { name: string; membershipNumber?: string; frequency?: string; amountPaise?: number };
+  count: number;
+  paidCount: number;
+  others: number;
+  plannedPaise: number;
+  paidPaise: number;
+  outstandingPaise: number;
+  overduePaise: number;
+  overdueCount: number;
+  upcomingPaise: number;
+  paidAheadPaise: number;
+  nextDue: Date | null;
+};
+
+/**
+ * Installments rolled up per scheme or per member: how much is planned, paid, still due, overdue
+ * (respecting each scheme's grace days), upcoming, and paid ahead.
+ */
+export async function groupInstallments(ctx: OrgContext, q: z.infer<typeof InstallmentGroupQuery>) {
+  const c = await cols();
+  const today = todayIn(ctx.org.settings.timezone);
+  const match: Record<string, unknown> = { organizationId: ctx.orgId, state: "active" };
+  if (q.schemeId && ObjectId.isValid(q.schemeId)) match.schemeId = new ObjectId(q.schemeId);
+  if (q.memberId && ObjectId.isValid(q.memberId)) match.memberId = new ObjectId(q.memberId);
+  const due: Record<string, Date> = {};
+  if (q.from) due.$gte = q.from;
+  if (q.to) due.$lte = q.to;
+  if (Object.keys(due).length) match.dueDate = due;
+  const key = q.by === "scheme" ? "$schemeId" : "$memberId";
+  const owed = { $max: [0, { $subtract: [{ $add: ["$amountPaise", "$penaltyPaise"] }, { $add: ["$paidPaise", "$penaltyPaidPaise"] }] }] };
+  const paid = { $add: ["$paidPaise", "$penaltyPaidPaise"] };
+  const overdueCond = { $lt: [{ $dateAdd: { startDate: "$dueDate", unit: "day", amount: "$grace" } }, today] };
+  const [r] = await c.installments
+    .aggregate<{ rows: GroupRow[]; total: { n: number }[]; sums: Partial<Record<"outstandingPaise" | "overduePaise" | "paidPaise" | "paidAheadPaise", number>>[] }>([
+      { $match: match },
+      { $lookup: { from: "haptaSchemes", localField: "schemeId", foreignField: "_id", as: "s", pipeline: [{ $project: { graceDays: 1 } }] } },
+      { $set: { grace: { $ifNull: [{ $arrayElemAt: ["$s.graceDays", 0] }, 0] }, owed, paidAll: paid } },
+      {
+        $group: {
+          _id: key,
+          count: { $sum: 1 },
+          others: { $addToSet: q.by === "scheme" ? "$memberId" : "$schemeId" },
+          plannedPaise: { $sum: { $add: ["$amountPaise", "$penaltyPaise"] } },
+          paidPaise: { $sum: "$paidAll" },
+          outstandingPaise: { $sum: { $cond: [{ $lte: ["$dueDate", today] }, "$owed", 0] } },
+          overduePaise: { $sum: { $cond: [{ $and: [overdueCond, { $gt: ["$owed", 0] }] }, "$owed", 0] } },
+          overdueCount: { $sum: { $cond: [{ $and: [overdueCond, { $gt: ["$owed", 0] }] }, 1, 0] } },
+          upcomingPaise: { $sum: { $cond: [{ $gt: ["$dueDate", today] }, "$owed", 0] } },
+          paidAheadPaise: { $sum: { $cond: [{ $gt: ["$dueDate", today] }, "$paidAll", 0] } },
+          paidCount: { $sum: { $cond: [{ $lte: ["$owed", 0] }, 1, 0] } },
+          nextDue: { $min: { $cond: [{ $gt: ["$owed", 0] }, "$dueDate", null] } },
+        },
+      },
+      { $lookup: q.by === "scheme" ? { from: "haptaSchemes", localField: "_id", foreignField: "_id", as: "x", pipeline: [{ $project: { name: 1, frequency: 1, amountPaise: 1 } }] } : { from: "members", localField: "_id", foreignField: "_id", as: "x", pipeline: [{ $project: { name: 1, membershipNumber: 1 } }] } },
+      { $set: { x: { $arrayElemAt: ["$x", 0] }, others: { $size: "$others" } } },
+      { $sort: { "x.name": 1, _id: 1 } },
+      {
+        $facet: {
+          rows: [{ $skip: (q.page - 1) * q.pageSize }, { $limit: q.pageSize }],
+          total: [{ $count: "n" }],
+          sums: [{ $group: { _id: null, outstandingPaise: { $sum: "$outstandingPaise" }, overduePaise: { $sum: "$overduePaise" }, paidPaise: { $sum: "$paidPaise" }, paidAheadPaise: { $sum: "$paidAheadPaise" } } }],
+        },
+      },
+    ])
+    .toArray();
+  const sums = r?.sums[0] ?? {};
+  return {
+    by: q.by,
+    items: (r?.rows ?? []).map((g) => ({
+      _id: g._id,
+      name: g.x?.name ?? "—",
+      membershipNumber: g.x?.membershipNumber,
+      frequency: g.x?.frequency,
+      amountPaise: g.x?.amountPaise,
+      count: g.count,
+      paidCount: g.paidCount,
+      /** members in this scheme, or schemes this member is in */
+      others: g.others,
+      plannedPaise: g.plannedPaise,
+      paidPaise: g.paidPaise,
+      outstandingPaise: g.outstandingPaise,
+      overduePaise: g.overduePaise,
+      overdueCount: g.overdueCount,
+      upcomingPaise: g.upcomingPaise,
+      paidAheadPaise: g.paidAheadPaise,
+      nextDue: g.nextDue ?? null,
+    })),
+    totals: { outstandingPaise: sums.outstandingPaise ?? 0, overduePaise: sums.overduePaise ?? 0, paidPaise: sums.paidPaise ?? 0, paidAheadPaise: sums.paidAheadPaise ?? 0 },
+    total: r?.total[0]?.n ?? 0,
     page: q.page,
     pageSize: q.pageSize,
   };

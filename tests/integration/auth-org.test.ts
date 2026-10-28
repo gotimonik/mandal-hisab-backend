@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addUser, api, ok, registerAndLogin, setupOrg } from "../helpers/api";
+import { addUser, api, ok, registerAndLogin, setupOrg, verifyEmailFromMail } from "../helpers/api";
 
 describe("authentication", () => {
   it("registers, logs in, rejects bad passwords and invalidates sessions on logout", async () => {
@@ -18,6 +18,7 @@ describe("authentication", () => {
   it("ignores role/admin fields submitted during registration", async () => {
     const email = `evil-${Date.now()}@example.com`;
     await ok(api("POST", "/auth/register", { body: { name: "Evil", email, password: "secret123", isPlatformAdmin: true, role: "admin" } }));
+    await verifyEmailFromMail(email);
     const login = await ok(api("POST", "/auth/login", { body: { email, password: "secret123" } }));
     expect(login.user.isPlatformAdmin).toBe(false);
   });

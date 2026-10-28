@@ -26,6 +26,8 @@ export interface UserDoc extends Timestamps {
   phone?: string;
   passwordHash: string;
   emailVerifiedAt?: Date | null;
+  /** Set on accounts created after email verification became required: no sign-in until verified. Older accounts lack it. */
+  mustVerifyEmail?: boolean;
   isPlatformAdmin: boolean;
   status: "active" | "deactivated";
   lastLoginAt?: Date;

@@ -79,9 +79,14 @@ export async function getReceipt(ctx: OrgContext, id: ObjectId, restrictMemberId
   };
 }
 
-export async function listReceipts(ctx: OrgContext, memberId?: ObjectId, limit = 100) {
+/** Newest first, one page at a time. */
+export async function listReceipts(ctx: OrgContext, memberId?: ObjectId, page = 1, pageSize = 25) {
   const c = await cols();
   const q: Record<string, unknown> = { organizationId: ctx.orgId };
   if (memberId) q.memberId = memberId;
-  return c.receipts.find(q).sort({ date: -1, _id: -1 }).limit(limit).toArray();
+  const [items, total] = await Promise.all([
+    c.receipts.find(q).sort({ date: -1, _id: -1 }).skip((page - 1) * pageSize).limit(pageSize).toArray(),
+    c.receipts.countDocuments(q),
+  ]);
+  return { items, total, page, pageSize };
 }

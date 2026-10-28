@@ -65,16 +65,19 @@ export async function notifyRoles(
   for (const m of ms) await notify({ ...n, organizationId, userId: m.userId, dedupeKey: `${n.dedupeKey}:${m.userId}` });
 }
 
-export async function listNotifications(auth: AuthContext, opts: { organizationId?: ObjectId; unreadOnly?: boolean; limit?: number }) {
+export async function listNotifications(auth: AuthContext, opts: { organizationId?: ObjectId; unreadOnly?: boolean; page?: number; pageSize?: number }) {
   const c = await cols();
+  const page = opts.page ?? 1;
+  const pageSize = opts.pageSize ?? 25;
   const q: Record<string, unknown> = { userId: auth.user._id };
   if (opts.organizationId) q.organizationId = opts.organizationId;
   if (opts.unreadOnly) q.readAt = null;
-  const [items, unread] = await Promise.all([
-    c.notifications.find(q).sort({ createdAt: -1 }).limit(opts.limit ?? 50).toArray(),
+  const [items, total, unread] = await Promise.all([
+    c.notifications.find(q).sort({ createdAt: -1 }).skip((page - 1) * pageSize).limit(pageSize).toArray(),
+    c.notifications.countDocuments(q),
     c.notifications.countDocuments({ ...q, readAt: null }),
   ]);
-  return { items, unread };
+  return { items, unread, total, page, pageSize };
 }
 
 export async function markRead(auth: AuthContext, ids: ObjectId[] | "all") {

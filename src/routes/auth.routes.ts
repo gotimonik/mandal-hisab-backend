@@ -3,7 +3,7 @@ import type { Router } from "@/lib/http";
 import * as authService from "@/services/auth.service";
 import * as orgService from "@/services/organization.service";
 import { listNotifications, markRead } from "@/services/notification.service";
-import { email } from "@/validators/common";
+import { email, pagination } from "@/validators/common";
 import { parseObjectId } from "@/lib/auth";
 
 export function registerAuthRoutes(r: Router) {
@@ -26,6 +26,11 @@ export function registerAuthRoutes(r: Router) {
     return authService.verifyEmail(b.token);
   });
   r.post("/auth/resend-verification", async (req) => authService.resendVerification(await req.auth()));
+  /** Signed-out version, for people who registered but haven't verified yet (they can't sign in). */
+  r.post("/auth/resend-verification-email", async (req) => {
+    const b = await req.body(z.object({ email }));
+    return authService.resendVerificationByEmail(b.email, req.ip);
+  });
   r.post("/auth/forgot-password", async (req) => {
     const b = await req.body(z.object({ email }));
     return authService.forgotPassword(b.email, req.ip);
@@ -52,10 +57,12 @@ export function registerAuthRoutes(r: Router) {
 
   // Notifications (user-level, optionally filtered by org)
   r.get("/notifications", async (req) => {
-    const q = req.queryAs(z.object({ orgId: z.string().optional(), unread: z.enum(["true", "false"]).optional() }));
+    const q = req.queryAs(pagination.extend({ orgId: z.string().optional(), unread: z.enum(["true", "false"]).optional() }));
     return listNotifications(await req.auth(), {
       organizationId: q.orgId ? parseObjectId(q.orgId) : undefined,
       unreadOnly: q.unread === "true",
+      page: q.page,
+      pageSize: q.pageSize,
     });
   });
   r.post("/notifications/read", async (req) => {

@@ -243,9 +243,24 @@ describe("payments", () => {
     expect((await api("GET", `/orgs/${o.orgId}/receipts/${pBVerified.receiptId}`, { token: userA.token })).status).toBe(404);
     // staff verify with an account
     await ok(api("POST", `/orgs/${o.orgId}/payments/${req.payment._id}/verify`, { token: o.admin.token, body: { accountId: o.cashAccountId } }));
-    const receipts = await ok<any[]>(api("GET", `/orgs/${o.orgId}/me/receipts`, { token: userA.token }));
-    expect(receipts).toHaveLength(1);
+    // receipts and notifications come a page at a time, with the total
+    const receipts = await ok(api("GET", `/orgs/${o.orgId}/me/receipts?pageSize=10`, { token: userA.token }));
+    expect(receipts).toMatchObject({ total: 1, page: 1, pageSize: 10 });
+    expect(receipts.items).toHaveLength(1);
     const notes = await ok(api("GET", `/notifications?orgId=${o.orgId}`, { token: userA.token }));
     expect(notes.items.some((n: any) => n.type === "payment.verified")).toBe(true);
+    expect(notes.total).toBeGreaterThanOrEqual(notes.items.length);
+    const page2 = await ok(api("GET", `/notifications?orgId=${o.orgId}&page=2&pageSize=1`, { token: userA.token }));
+    expect(page2.items.length).toBe(notes.total > 1 ? 1 : 0);
+
+    // "My schemes": only their own enrollments, each with the full schedule
+    const mySchemes = await ok<any[]>(api("GET", `/orgs/${o.orgId}/me/schemes`, { token: userA.token }));
+    expect(mySchemes.length).toBeGreaterThan(0);
+    for (const e of mySchemes) {
+      expect(e.scheme.name).toBeTruthy();
+      expect(e.schedule).toHaveLength(e.installmentCount);
+      expect(e.totalPaidPaise).toBeGreaterThanOrEqual(e.paidPaise);
+    }
+    expect(mySchemes.reduce((sum: number, e: any) => sum + e.totalPaidPaise, 0)).toBeGreaterThanOrEqual(100_000); // the verified ₹1,000
   });
 });

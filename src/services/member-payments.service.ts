@@ -42,7 +42,33 @@ export async function myPaymentOptions(ctx: OrgContext) {
     .aggregate<{ t: number }>([{ $match: { organizationId: ctx.orgId, memberId, status: "pending" } }, { $group: { _id: null, t: { $sum: "$amountPaise" } } }])
     .toArray();
   const loans = await listFundLoans(ctx, { status: "active" }, memberId);
+  // Per scheme: what is due by the end of this month, the next unpaid installment, and what is left overall,
+  // so the member can say which scheme the cash was for (and pay ahead).
+  const perScheme = await c.installments
+    .aggregate<{ _id: ObjectId; due: number; months: number; left: number; next: number | null; nextLabel: string | null; name: string; frequency: string }>([
+      { $match: { organizationId: ctx.orgId, memberId, state: "active" } },
+      { $project: { schemeId: 1, dueDate: 1, sequence: 1, periodLabel: 1, owed: { $subtract: [{ $add: ["$amountPaise", "$penaltyPaise"] }, { $add: ["$paidPaise", "$penaltyPaidPaise"] }] } } },
+      { $match: { owed: { $gt: 0 } } },
+      { $sort: { dueDate: 1, sequence: 1 } },
+      {
+        $group: {
+          _id: "$schemeId",
+          due: { $sum: { $cond: [{ $lte: ["$dueDate", monthEnd] }, "$owed", 0] } },
+          months: { $sum: { $cond: [{ $lte: ["$dueDate", monthEnd] }, 1, 0] } },
+          left: { $sum: "$owed" },
+          next: { $first: "$owed" },
+          nextLabel: { $first: "$periodLabel" },
+        },
+      },
+      { $lookup: { from: "haptaSchemes", localField: "_id", foreignField: "_id", as: "s" } },
+      { $unwind: "$s" },
+      { $match: { "s.organizationId": ctx.orgId, "s.status": "active" } },
+      { $project: { due: 1, months: 1, left: 1, next: 1, nextLabel: 1, name: "$s.name", frequency: "$s.frequency" } },
+      { $sort: { due: -1, name: 1 } },
+    ])
+    .toArray();
   return {
+    schemes: perScheme.map((x) => ({ _id: x._id, name: x.name, frequency: x.frequency, duePaise: x.due, months: x.months, remainingPaise: x.left, nextPaise: x.next ?? 0, nextLabel: x.nextLabel })),
     hapta: { duePaise: due?.due ?? 0, months: due?.months ?? 0, pendingPaise: pendingHapta?.t ?? 0 },
     upads: loans.items.map((l) => ({ _id: l._id, number: l.number, interestDuePaise: l.interestDuePaise, outstandingPaise: l.outstandingPaise, monthlyRate: l.monthlyRate, unpaidMonths: l.unpaidMonths })),
     methods: ctx.org.settings.paymentMethods,

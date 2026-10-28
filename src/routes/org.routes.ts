@@ -9,7 +9,7 @@ import * as schemeService from "@/services/scheme.service";
 import * as paymentService from "@/services/payment.service";
 import * as receiptService from "@/services/receipt.service";
 import * as accountService from "@/services/account.service";
-import { dateOnly, optText, reason } from "@/validators/common";
+import { dateOnly, optText, reason, pagination } from "@/validators/common";
 
 const W = { write: true } as const;
 
@@ -114,6 +114,9 @@ export function registerOrgRoutes(r: Router) {
   r.get("/orgs/:orgId/installments", async (req) =>
     schemeService.listInstallments(await req.org("installments.view"), req.queryAs(schemeService.InstallmentListQuery)),
   );
+  r.get("/orgs/:orgId/installments/groups", async (req) =>
+    schemeService.groupInstallments(await req.org("installments.view"), req.queryAs(schemeService.InstallmentGroupQuery)),
+  );
   r.get("/orgs/:orgId/installments/:id", async (req) =>
     schemeService.getInstallment(await req.org("installments.view"), parseObjectId(req.params.id, "Installment")),
   );
@@ -159,8 +162,8 @@ export function registerOrgRoutes(r: Router) {
   /* ---------------- receipts */
   r.get("/orgs/:orgId/receipts", async (req) => {
     const ctx = await req.org("payments.view");
-    const q = req.queryAs(z.object({ memberId: z.string().optional() }));
-    return receiptService.listReceipts(ctx, q.memberId ? parseObjectId(q.memberId) : undefined);
+    const q = req.queryAs(pagination.extend({ memberId: z.string().optional() }));
+    return receiptService.listReceipts(ctx, q.memberId ? parseObjectId(q.memberId) : undefined, q.page, q.pageSize);
   });
   r.get("/orgs/:orgId/receipts/:id", async (req) => {
     const ctx = await req.org("self.view");
@@ -227,6 +230,12 @@ export function registerOrgRoutes(r: Router) {
     if (!ctx.membership.memberId) return { items: [], total: 0, page: 1, pageSize: 50 };
     return schemeService.listInstallments(ctx, req.queryAs(schemeService.InstallmentListQuery), ctx.membership.memberId);
   });
+  /** The member's own schemes, each with its full schedule (past and future months). */
+  r.get("/orgs/:orgId/me/schemes", async (req) => {
+    const ctx = await req.org("self.view");
+    if (!ctx.membership.memberId) return [];
+    return schemeService.memberSchemes(ctx, ctx.membership.memberId);
+  });
   r.get("/orgs/:orgId/me/payments", async (req) => {
     const ctx = await req.org("self.view");
     if (!ctx.membership.memberId) return { items: [], total: 0, totalAmountPaise: 0, page: 1, pageSize: 25 };
@@ -234,8 +243,9 @@ export function registerOrgRoutes(r: Router) {
   });
   r.get("/orgs/:orgId/me/receipts", async (req) => {
     const ctx = await req.org("self.view");
-    if (!ctx.membership.memberId) return [];
-    return receiptService.listReceipts(ctx, ctx.membership.memberId);
+    const q = req.queryAs(pagination);
+    if (!ctx.membership.memberId) return { items: [], total: 0, page: q.page, pageSize: q.pageSize };
+    return receiptService.listReceipts(ctx, ctx.membership.memberId, q.page, q.pageSize);
   });
   r.post("/orgs/:orgId/me/payment-requests", async (req) =>
     paymentService.submitMemberPaymentRequest(await req.org("self.submitPayment", W), await req.body(paymentService.MemberPaymentRequestSchema)),

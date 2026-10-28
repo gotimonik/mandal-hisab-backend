@@ -42,10 +42,20 @@ export async function ok<T = any>(p: Promise<ApiResult<T>>): Promise<T> {
 let n = 0;
 export const uniq = (p = "k") => `${p}-${Date.now().toString(36)}-${(n++).toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 
+/** Open the verification link from the last email sent to this address (new accounts must verify). */
+export async function verifyEmailFromMail(email: string) {
+  const { sentEmails } = await import("@/services/email.service");
+  const mail = sentEmails.filter((m) => m.to === email && /verify-email\?token=/.test(m.text ?? "")).pop();
+  if (!mail) throw new Error(`no verification email for ${email}`);
+  const token = decodeURIComponent((mail.text ?? "").match(/verify-email\?token=([^\s]+)/)![1]);
+  return ok<{ ok: true; email: string | null }>(api("POST", "/auth/verify-email", { body: { token } }));
+}
+
 export async function registerAndLogin(name = "User") {
   const email = `${uniq("u")}@example.com`.toLowerCase();
   const password = "secret123";
   const reg = await ok(api("POST", "/auth/register", { body: { name, email, password } }));
+  await verifyEmailFromMail(email);
   const login = await ok<{ token: string }>(api("POST", "/auth/login", { body: { email, password } }));
   return { token: login.token, userId: reg.id as string, email, password };
 }

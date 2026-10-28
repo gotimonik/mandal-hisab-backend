@@ -10,6 +10,7 @@ import { audit } from "@/lib/audit";
 import type { AuthContext } from "@/lib/auth";
 import type { UserDoc } from "@/types/models";
 import { sendEmail } from "./email.service";
+import { renderEmail } from "./email-templates";
 import { email, phone } from "@/validators/common";
 
 export const passwordSchema = z
@@ -24,6 +25,8 @@ export const RegisterSchema = z.object({
   email,
   phone,
   password: passwordSchema,
+  /** Token from the invitation link the person followed — proves they own the invited email. */
+  inviteToken: z.string().min(10).max(200).optional(),
 });
 
 export const LoginSchema = z.object({ email, password: z.string().min(1).max(128) });
@@ -57,13 +60,18 @@ export async function register(input: z.infer<typeof RegisterSchema>, ip: string
   await rateLimit(`register:${ip}`, 10, 3600);
   const c = await cols();
   const now = new Date();
+  // Someone who followed an invitation emailed to this exact address has already shown they own it.
+  const invited = input.inviteToken
+    ? await c.invitations.findOne({ tokenHash: hashToken(input.inviteToken), email: input.email, status: "pending", expiresAt: { $gt: now } }, { projection: { _id: 1 } })
+    : null;
   const user: UserDoc = {
     _id: new ObjectId(),
     name: input.name,
     email: input.email,
     phone: input.phone,
     passwordHash: await hashPassword(input.password),
-    emailVerifiedAt: null,
+    emailVerifiedAt: invited ? now : null,
+    mustVerifyEmail: true,
     isPlatformAdmin: false,
     status: "active",
     sessionVersion: 1,
@@ -76,7 +84,7 @@ export async function register(input: z.infer<typeof RegisterSchema>, ip: string
     if (isDuplicateKeyError(e)) throw conflict("An account with this email already exists");
     throw e;
   }
-  await sendVerificationEmail(user);
+  if (!invited) await sendVerificationEmail(user);
   await audit({ actorId: user._id, action: "user.register", entityType: "user", entityId: user._id, ip });
   return publicUser(user);
 }
@@ -99,11 +107,16 @@ async function issueToken(userId: ObjectId, purpose: "email_verification" | "pas
 async function sendVerificationEmail(user: UserDoc) {
   const token = await issueToken(user._id, "email_verification", 60 * 48);
   const link = `${env().FRONTEND_URL}/verify-email?token=${encodeURIComponent(token)}`;
-  await sendEmail({
-    to: user.email,
-    subject: "Verify your MandalHisab email",
-    text: `Namaste ${user.name},\n\nPlease verify your email address: ${link}\n\nThis link expires in 48 hours.`,
+  const mail = renderEmail({
+    preheader: "One tap to activate your MandalHisab account.",
+    heading: "Confirm your email",
+    greeting: `Namaste ${user.name.split(" ")[0]},`,
+    paragraphs: ["Welcome to MandalHisab! Please confirm this is your email address to activate your account — then you can sign in and open your Mandal."],
+    button: { label: "Verify my email", url: link },
+    note: "This link expires in 48 hours. If you didn't create a MandalHisab account, you can safely ignore this email.",
+    reason: `You're receiving this because ${user.email} was used to create a MandalHisab account.`,
   });
+  await sendEmail({ to: user.email, subject: "Confirm your email for MandalHisab", ...mail });
 }
 
 export async function resendVerification(auth: AuthContext) {
@@ -128,6 +141,21 @@ export async function verifyEmail(token: string) {
   const t = await consumeToken(token, "email_verification");
   const c = await cols();
   await c.users.updateOne({ _id: t.userId }, { $set: { emailVerifiedAt: new Date(), updatedAt: new Date() } });
+  const u = await c.users.findOne({ _id: t.userId }, { projection: { email: 1 } });
+  // The email is returned so the sign-in form can be pre-filled; the token already proved it.
+  return { ok: true, email: u?.email ?? null };
+}
+
+/**
+ * Resend the verification email for someone who can't sign in yet. Always the same answer,
+ * so it can't be used to find out which emails have accounts.
+ */
+export async function resendVerificationByEmail(emailAddr: string, ip: string) {
+  await rateLimit(`verify-resend-ip:${ip}`, 10, 3600);
+  await rateLimit(`verify-resend-email:${emailAddr}`, 5, 3600);
+  const c = await cols();
+  const user = await c.users.findOne({ email: emailAddr, status: "active" });
+  if (user && !user.emailVerifiedAt) await sendVerificationEmail(user);
   return { ok: true };
 }
 
@@ -145,8 +173,10 @@ export async function login(input: z.infer<typeof LoginSchema>, meta: { ip: stri
   }
   if (!(await verifyPassword(input.password, user.passwordHash))) throw unauthorized("Invalid email or password");
   if (user.status !== "active") throw new AppError("FORBIDDEN", "This account has been deactivated");
-  if (env().REQUIRE_EMAIL_VERIFICATION && !user.emailVerifiedAt) {
-    throw new AppError("FORBIDDEN", "Please verify your email address before logging in");
+  // New accounts (mustVerifyEmail) — or every account when REQUIRE_EMAIL_VERIFICATION is on —
+  // can't sign in until the email is verified. Checked after the password, so it reveals nothing.
+  if ((user.mustVerifyEmail || env().REQUIRE_EMAIL_VERIFICATION) && !user.emailVerifiedAt) {
+    throw new AppError("EMAIL_NOT_VERIFIED", "Please verify your email address first. Open the link we emailed you, or send a new one.");
   }
   const token = randomToken();
   const now = new Date();
@@ -192,11 +222,16 @@ export async function forgotPassword(emailAddr: string, ip: string) {
   if (user) {
     const token = await issueToken(user._id, "password_reset", 60);
     const link = `${env().FRONTEND_URL}/reset-password?token=${encodeURIComponent(token)}`;
-    await sendEmail({
-      to: user.email,
-      subject: "Reset your MandalHisab password",
-      text: `Namaste ${user.name},\n\nReset your password: ${link}\n\nThis link expires in 1 hour. If you did not request this, ignore this email.`,
+    const mail = renderEmail({
+      preheader: "Choose a new password for your MandalHisab account.",
+      heading: "Reset your password",
+      greeting: `Namaste ${user.name.split(" ")[0]},`,
+      paragraphs: ["We got a request to reset the password for your MandalHisab account. Tap the button below to choose a new one."],
+      button: { label: "Choose a new password", url: link },
+      note: "This link expires in 1 hour and can be used once. If you didn't ask for this, ignore this email — your password stays the same.",
+      reason: `You're receiving this because a password reset was requested for ${user.email}.`,
     });
+    await sendEmail({ to: user.email, subject: "Reset your MandalHisab password", ...mail });
   }
   // Always the same response so emails cannot be enumerated.
   return { ok: true };
