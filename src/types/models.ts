@@ -726,6 +726,21 @@ export interface NotificationDoc {
   dedupeKey: string; // unique per (userId, dedupeKey)
   readAt?: Date | null;
   createdAt: Date;
+  /** When it was sent as a phone push (null/absent = not yet). */
+  pushedAt?: Date | null;
+}
+
+/** A phone (iOS / Android app) that receives push notifications for a user. */
+export interface PushDeviceDoc {
+  _id: Id;
+  userId: Id;
+  /** Firebase Cloud Messaging registration token — unique per app install. */
+  token: string;
+  platform: "ios" | "android";
+  /** The sign-in session on that phone: signing out there stops its pushes. */
+  sessionId?: Id | null;
+  createdAt: Date;
+  lastSeenAt: Date;
 }
 
 export interface AuditLogDoc {

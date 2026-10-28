@@ -12,6 +12,7 @@ import type { UserDoc } from "@/types/models";
 import { sendEmail } from "./email.service";
 import { renderEmail } from "./email-templates";
 import { email, phone } from "@/validators/common";
+import { unregisterAllDevices, unregisterSessionDevices } from "./push.service";
 
 export const passwordSchema = z
   .string()
@@ -204,6 +205,7 @@ export async function login(input: z.infer<typeof LoginSchema>, meta: { ip: stri
 export async function logout(auth: AuthContext) {
   const c = await cols();
   await c.sessions.deleteOne({ _id: auth.session._id });
+  await unregisterSessionDevices(auth.session._id);
   return { ok: true };
 }
 
@@ -211,6 +213,8 @@ export async function logoutAll(auth: AuthContext) {
   const c = await cols();
   await c.users.updateOne({ _id: auth.user._id }, { $inc: { sessionVersion: 1 } });
   await c.sessions.deleteMany({ userId: auth.user._id });
+  // signed out everywhere: no more pushes to any of their phones
+  await unregisterAllDevices(auth.user._id);
   return { ok: true };
 }
 

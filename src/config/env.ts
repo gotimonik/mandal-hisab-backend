@@ -20,6 +20,11 @@ const EnvSchema = z.object({
   EMAIL_FROM: z.string().default("MandalHisab <no-reply@example.com>"),
   RESEND_API_KEY: z.string().optional(),
   BLOB_READ_WRITE_TOKEN: z.string().optional(),
+  /**
+   * Firebase service account (the JSON key file, as-is or base64-encoded) used to send phone
+   * push notifications through Firebase Cloud Messaging. Unset = no pushes (in-app only).
+   */
+  FCM_SERVICE_ACCOUNT: z.string().optional(),
   MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(5 * 1024 * 1024),
 });
 

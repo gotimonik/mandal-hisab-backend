@@ -20,6 +20,7 @@ import type {
   MemberLedgerEntryDoc,
   MemberSchemeEnrollmentDoc,
   NotificationDoc,
+  PushDeviceDoc,
   OrganizationDoc,
   OrganizationMembershipDoc,
   PaymentDoc,
@@ -58,6 +59,7 @@ export interface Collections {
   loanRepayments: Collection<LoanRepaymentDoc>;
   interestCalculations: Collection<InterestCalculationDoc>;
   notifications: Collection<NotificationDoc>;
+  pushDevices: Collection<PushDeviceDoc>;
   auditLogs: Collection<AuditLogDoc>;
   counters: Collection<CounterDoc>;
   memberLedger: Collection<MemberLedgerEntryDoc>;
@@ -93,6 +95,7 @@ const NAMES: (keyof Collections)[] = [
   "loanRepayments",
   "interestCalculations",
   "notifications",
+  "pushDevices",
   "auditLogs",
   "counters",
   "memberLedger",
@@ -204,6 +207,8 @@ async function createIndexes() {
 
     c.notifications.createIndex({ userId: 1, dedupeKey: 1 }, { unique: true }),
     c.notifications.createIndex({ userId: 1, organizationId: 1, createdAt: -1 }),
+    c.pushDevices.createIndex({ token: 1 }, { unique: true }),
+    c.pushDevices.createIndex({ userId: 1 }),
     c.auditLogs.createIndex({ organizationId: 1, createdAt: -1 }),
 
     // Member savings ledger: dedupeKey makes double interest / double posting impossible.

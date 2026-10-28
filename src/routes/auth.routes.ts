@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Router } from "@/lib/http";
 import * as authService from "@/services/auth.service";
 import * as orgService from "@/services/organization.service";
+import * as pushService from "@/services/push.service";
 import { listNotifications, markRead } from "@/services/notification.service";
 import { email, pagination } from "@/validators/common";
 import { parseObjectId } from "@/lib/auth";
@@ -16,6 +17,12 @@ export function registerAuthRoutes(r: Router) {
   r.post("/auth/logout", async (req) => authService.logout(await req.auth()));
   r.post("/auth/logout-all", async (req) => authService.logoutAll(await req.auth()));
   r.get("/auth/me", async (req) => authService.me(await req.auth()));
+  /* phone push notifications (iOS / Android app) */
+  r.post("/me/push-devices", async (req) => pushService.registerDevice(await req.auth(), await req.body(pushService.PushDeviceSchema)));
+  r.delete("/me/push-devices", async (req) => {
+    const b = await req.body(z.object({ token: z.string().min(1).max(4096) }));
+    return pushService.unregisterDevice(await req.auth(), b.token);
+  });
   r.patch("/auth/me", async (req) => authService.updateProfile(await req.auth(), await req.body(authService.ProfileSchema)));
   r.post("/auth/change-password", async (req) => {
     const b = await req.body(z.object({ currentPassword: z.string().min(1), newPassword: authService.passwordSchema }));

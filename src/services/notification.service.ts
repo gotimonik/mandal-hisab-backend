@@ -1,6 +1,7 @@
 import { ObjectId, type ClientSession } from "mongodb";
 import { cols } from "@/lib/collections";
 import type { AuthContext } from "@/lib/auth";
+import { queuePush } from "./push.service";
 
 export interface NotifyInput {
   organizationId: ObjectId;
@@ -14,9 +15,8 @@ export interface NotifyInput {
 }
 
 /**
- * In-app notification. Channel fan-out (email / push via Capacitor + FCM/APNs) is
- * designed to hang off this function: add a `channels` step here once credentials
- * exist. Returns true when a new notification was created.
+ * In-app notification, also pushed to the person's phones (push.service) once the request
+ * that created it finishes. Returns true when a new notification was created.
  */
 export async function notify(n: NotifyInput, session?: ClientSession): Promise<boolean> {
   const c = await cols();
@@ -38,6 +38,7 @@ export async function notify(n: NotifyInput, session?: ClientSession): Promise<b
     },
     { upsert: true, session },
   );
+  if (r.upsertedCount === 1 && r.upsertedId) queuePush(r.upsertedId as ObjectId);
   return r.upsertedCount === 1;
 }
 
