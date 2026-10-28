@@ -57,4 +57,48 @@ describe("FCM sending", () => {
       resetEnvCache();
     }
   });
+
+  it("keeps going when one phone fails, and only forgets tokens FCM says are dead", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" }) as string;
+    process.env.FCM_SERVICE_ACCOUNT = JSON.stringify({ project_id: "demo-proj", client_email: "push@demo-proj.iam.gserviceaccount.com", private_key: pem });
+    resetEnvCache();
+    const fcm = (status: number, error: object) => new Response(JSON.stringify({ error }), { status });
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const body = String(init?.body ?? "");
+      if (String(url).includes("oauth2")) return new Response(JSON.stringify({ access_token: "ya29.test", expires_in: 3600 }));
+      if (body.includes("apns-broken")) return fcm(401, { code: 401, message: "Invalid APNs credential.", status: "UNAUTHENTICATED", details: [{ errorCode: "THIRD_PARTY_AUTH_ERROR" }] });
+      if (body.includes("net-down")) throw new TypeError("fetch failed");
+      if (body.includes("bare-404")) return fcm(404, { code: 404, message: "Requested entity was not found.", status: "NOT_FOUND" });
+      if (body.includes("other-project")) return fcm(403, { code: 403, status: "PERMISSION_DENIED", details: [{ errorCode: "SENDER_ID_MISMATCH" }] });
+      if (body.includes("bad-token")) return fcm(400, { code: 400, message: "The registration token is not a valid FCM registration token", status: "INVALID_ARGUMENT" });
+      return new Response("{}");
+    }) as typeof fetch;
+    try {
+      const { sendNotificationPush } = await import("@/services/push.service");
+      const c = await cols();
+      const userId = new ObjectId();
+      const tok = (name: string) => `${name}-${"z".repeat(40)}`;
+      const names = ["apns-broken", "net-down", "bare-404", "other-project", "bad-token", "good"];
+      await c.pushDevices.insertMany(
+        names.map((n) => ({ _id: new ObjectId(), userId, token: tok(n), platform: n === "apns-broken" ? ("ios" as const) : ("android" as const), createdAt: new Date(), lastSeenAt: new Date() })),
+      );
+      const id = new ObjectId();
+      await c.notifications.insertOne({ _id: id, organizationId: new ObjectId(), userId, type: "t", title: "Hi", body: "There", dedupeKey: "k2", readAt: null, createdAt: new Date() });
+      const err = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      // the good phone still gets it, even though it comes after the failures
+      expect(await sendNotificationPush(id)).toBe(1);
+      err.mockRestore();
+
+      // dead tokens are forgotten; setup / network problems keep the phone
+      const left = (await c.pushDevices.find({ userId }).toArray()).map((d) => d.token).sort();
+      expect(left).toEqual([tok("apns-broken"), tok("bare-404"), tok("good"), tok("net-down")].sort());
+    } finally {
+      globalThis.fetch = realFetch;
+      delete process.env.FCM_SERVICE_ACCOUNT;
+      resetEnvCache();
+    }
+  });
 });

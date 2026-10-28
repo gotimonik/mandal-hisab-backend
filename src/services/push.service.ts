@@ -60,7 +60,8 @@ export interface PushMessage {
   data: Record<string, string>;
   badge?: number;
 }
-type Transport = (m: PushMessage) => Promise<"ok" | "invalid-token" | "error">;
+type SendResult = "ok" | "invalid-token" | "error";
+type Transport = (m: PushMessage) => Promise<SendResult>;
 
 /** Messages "sent" while no FCM credentials are configured (tests and local development). */
 export const sentPushes: PushMessage[] = [];
@@ -106,7 +107,14 @@ export async function sendNotificationPush(notificationId: ObjectId) {
   const title = org?.name ? `${words.title} · ${org.name}` : words.title;
   let sent = 0;
   for (const d of devices) {
-    const r = await send({ token: d.token, title, body: words.body, badge, data: { link: n.link ?? "", notificationId: n._id.toHexString(), organizationId: n.organizationId.toHexString() } });
+    // one phone failing (network, Apple credentials …) never stops the others
+    let r: SendResult;
+    try {
+      r = await send({ token: d.token, title, body: words.body, badge, data: { link: n.link ?? "", notificationId: n._id.toHexString(), organizationId: n.organizationId.toHexString() } });
+    } catch (e) {
+      console.error("[push] send failed", d.platform, (e as Error).message);
+      r = "error";
+    }
     if (r === "ok") sent++;
     // the app was uninstalled or the token expired: forget it
     if (r === "invalid-token") await c.pushDevices.deleteOne({ _id: d._id });
@@ -114,7 +122,7 @@ export async function sendNotificationPush(notificationId: ObjectId) {
   return sent;
 }
 
-async function send(m: PushMessage): Promise<"ok" | "invalid-token" | "error"> {
+async function send(m: PushMessage): Promise<SendResult> {
   if (testTransport) return testTransport(m);
   const account = serviceAccount();
   if (!account) {
@@ -137,9 +145,35 @@ async function send(m: PushMessage): Promise<"ok" | "invalid-token" | "error"> {
   });
   if (res.ok) return "ok";
   const text = await res.text().catch(() => "");
-  if (res.status === 404 || /UNREGISTERED|registration-token-not-registered|INVALID_ARGUMENT.*token/i.test(text)) return "invalid-token";
+  if (isDeadToken(text)) return "invalid-token";
+  if (fcmError(text).code === "THIRD_PARTY_AUTH_ERROR") {
+    // our setup, not the phone: keep the token (fix the APNs key in Firebase → Cloud Messaging)
+    console.error("[push] FCM rejected the APNs credentials for an iOS phone — check the APNs key in Firebase. Token kept.");
+    return "error";
+  }
   console.error("[push] FCM", res.status, text.slice(0, 300));
   return "error";
+}
+
+/** FCM's reason for a failed send, from the HTTP v1 error body. */
+export function fcmError(text: string): { code?: string; message?: string } {
+  try {
+    const e = (JSON.parse(text) as { error?: { status?: string; message?: string; details?: { errorCode?: string }[] } }).error;
+    return { code: e?.details?.find((d) => d?.errorCode)?.errorCode ?? e?.status, message: e?.message };
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The token will never work again (app uninstalled, token expired, or it belongs to another
+ * Firebase project), so the device can be forgotten. A bare 404 is NOT enough: a wrong project id
+ * also gives 404, and that must never wipe everyone's devices.
+ */
+export function isDeadToken(text: string) {
+  const { code, message } = fcmError(text);
+  if (code === "UNREGISTERED" || code === "SENDER_ID_MISMATCH") return true;
+  return code === "INVALID_ARGUMENT" && /registration token/i.test(message ?? "");
 }
 
 /* ------------------------------------------------------------------ Google OAuth (service account → access token) */
