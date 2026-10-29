@@ -10,6 +10,7 @@ import * as paymentService from "@/services/payment.service";
 import * as receiptService from "@/services/receipt.service";
 import * as accountService from "@/services/account.service";
 import { dateOnly, optText, reason, pagination } from "@/validators/common";
+import * as membership from "@/services/membership.service";
 
 const W = { write: true } as const;
 
@@ -65,6 +66,22 @@ export function registerOrgRoutes(r: Router) {
   r.get("/orgs/:orgId/members/:id", async (req) => memberService.getMember(await req.org("members.view"), parseObjectId(req.params.id, "Member")));
   r.patch("/orgs/:orgId/members/:id", async (req) =>
     memberService.updateMember(await req.org("members.manage", W), parseObjectId(req.params.id, "Member"), await req.body(memberService.MemberInputSchema.partial())),
+  );
+
+  /* ---------------- joining / leaving partway through, at the price of a hapta share */
+  r.get("/orgs/:orgId/members/:id/joining", async (req) => membership.joiningQuote(await req.org("members.view"), parseObjectId(req.params.id, "Member")));
+  r.post("/orgs/:orgId/members/:id/joining/pay", async (req) =>
+    membership.recordJoiningPayment(await req.org("members.balanceAdjust", W), parseObjectId(req.params.id, "Member"), await req.body(membership.JoiningPaymentSchema)),
+  );
+  r.post("/orgs/:orgId/members/:id/joining/waive", async (req) =>
+    membership.waiveJoining(await req.org("members.balanceAdjust", W), parseObjectId(req.params.id, "Member"), await req.body(membership.JoiningWaiveSchema)),
+  );
+  r.get("/orgs/:orgId/members/:id/leaving", async (req) => membership.leavingQuote(await req.org("members.view"), parseObjectId(req.params.id, "Member")));
+  r.post("/orgs/:orgId/members/:id/leaving/waive-hapta", async (req) =>
+    membership.waiveMemberUnpaidHapta(await req.org("members.balanceAdjust", W), parseObjectId(req.params.id, "Member"), await req.body(membership.WaiveMemberHaptaSchema)),
+  );
+  r.post("/orgs/:orgId/members/:id/leave", async (req) =>
+    membership.leaveMandal(await req.org("withdrawals.record", W), parseObjectId(req.params.id, "Member"), await req.body(membership.LeaveSchema)),
   );
 
   /* ---------------- hapta schemes */

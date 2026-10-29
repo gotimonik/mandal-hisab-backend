@@ -111,7 +111,13 @@ export async function enrollInMonthlyHapta(ctx: OrgContext, memberIds: ObjectId[
   const c = await cols();
   const shares = await c.members.find({ _id: { $in: memberIds }, organizationId: ctx.orgId }, { projection: { haptaShares: 1 } }).toArray();
   const sharesOf = (id: ObjectId) => shares.find((m) => m._id.equals(id))?.haptaShares ?? 1;
-  return enrollMembers(ctx, s._id, { members: memberIds.map((id) => ({ memberId: id.toHexString(), amount: null, startDate: start, shares: sharesOf(id) })) });
+  const r = await enrollMembers(ctx, s._id, { members: memberIds.map((id) => ({ memberId: id.toHexString(), amount: null, startDate: start, shares: sharesOf(id) })) });
+  // hapta starting after the first month = joining partway through: they owe the price of their shares
+  if (start > s.startDate) {
+    const { markJoiningDue } = await import("./membership.service");
+    await markJoiningDue(ctx.orgId, memberIds);
+  }
+  return r;
 }
 
 /**

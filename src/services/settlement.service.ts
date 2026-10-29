@@ -86,7 +86,7 @@ export async function settlementPreview(ctx: OrgContext) {
   const owed = { $subtract: [{ $add: ["$amountPaise", "$penaltyPaise"] }, { $add: ["$paidPaise", "$penaltyPaidPaise"] }] };
   const [accounts, members, loans, fl, unpaidHapta, pendingPayments, pendingClaims, pendingRequests, pendingExpenses, emiLoans] = await Promise.all([
     cashAccounts(ctx),
-    c.members.find({ organizationId: ctx.orgId }, { projection: { name: 1, membershipNumber: 1, status: 1, haptaShares: 1, balancePaise: 1 } }).sort({ name: 1 }).toArray(),
+    c.members.find({ organizationId: ctx.orgId }, { projection: { name: 1, membershipNumber: 1, status: 1, haptaShares: 1, balancePaise: 1, joining: 1 } }).sort({ name: 1 }).toArray(),
     c.fundLoans.find({ organizationId: ctx.orgId, status: "active" }, { projection: { memberId: 1, outstandingPaise: 1, number: 1 } }).toArray(),
     fundLoanTotals(ctx.org),
     c.installments
@@ -146,6 +146,9 @@ export async function settlementPreview(ctx: OrgContext) {
   if (unpaidHapta[0]?.amt) blockers.push({ key: "hapta", label: "Unpaid hapta (collect it, or waive it here)", amountPaise: unpaidHapta[0].amt, count: unpaidHapta[0].n, link: `${base}/monthly?show=due` });
   if (fl.interestDuePaise > 0) blockers.push({ key: "upadInterest", label: "Upad interest still due — collect it first", amountPaise: fl.interestDuePaise, link: `${base}/fund-loans` });
   if (emiLoans) blockers.push({ key: "emiLoans", label: "EMI loans still open", count: emiLoans, link: `${base}/loans` });
+  for (const m of members.filter((x) => x.status === "active" && x.joining?.status === "due")) {
+    blockers.push({ key: `joining:${m._id}`, label: `${m.name} hasn't paid the joining amount — collect it or waive it`, link: `${base}/members/${m._id}` });
+  }
   const short = rows.filter((r) => r.netPaise < 0 && !r.paidOut);
   for (const r of short) blockers.push({ key: `short:${r.memberId}`, label: `${r.name} owes more than they have — collect ${formatMoney(-r.netPaise, ctx.org.settings.currency)} first`, amountPaise: -r.netPaise, link: `${base}/members/${r.memberId}` });
 

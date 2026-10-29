@@ -220,6 +220,47 @@ export interface MemberDoc extends Timestamps {
    * postMemberEntry() inside transactions; used as a concurrency guard for withdrawals.
    */
   balancePaise?: number;
+  /**
+   * Joining partway through (after the hapta's first month): the member buys in at the price of a
+   * share — see membership.service. Absent for members who were there from the start.
+   */
+  joining?: MemberJoining;
+  /** Leaving partway through: paid their balance + share of the Mandal's own money, then marked "left". */
+  leaving?: MemberLeaving;
+}
+
+export interface MemberJoining {
+  status: "due" | "paid" | "waived";
+  since: Date;
+  at?: Date;
+  by?: Id;
+  date?: Date;
+  shares?: number;
+  /** price of one share when they paid: savings part + Mandal's-own-money part */
+  perShareSavingsPaise?: number;
+  perShareMandalPaise?: number;
+  /** what they paid: savings credited to their balance + their part of the Mandal's own money */
+  savingsPaise?: number;
+  mandalSharePaise?: number;
+  totalPaise?: number;
+  transactionId?: Id | null;
+  reason?: string;
+}
+
+export interface MemberLeaving {
+  status: "in_progress" | "done";
+  key: string;
+  startedAt: Date;
+  at?: Date;
+  by: Id;
+  date: Date;
+  shares: number;
+  savingsPaise: number;
+  mandalSharePaise: number;
+  upadSettledPaise: number;
+  netPaise: number;
+  withdrawalId?: Id | null;
+  reason?: string;
 }
 
 /* ------------------------------------------------------------------ Member ledger (savings) */
@@ -243,7 +284,7 @@ export interface MemberLedgerEntryDoc {
   description: string;
   /** e.g. "2026-10" for hapta/interest */
   period?: string;
-  sourceType: "payment" | "interestRun" | "withdrawal" | "opening" | "adjustment" | "fundLoanPayment" | "settlement";
+  sourceType: "payment" | "interestRun" | "withdrawal" | "opening" | "adjustment" | "fundLoanPayment" | "settlement" | "joining" | "leaving";
   sourceId: Id;
   transactionId?: Id | null;
   /** Unique per org when set: prevents double interest / double opening balance / double posting */
@@ -552,7 +593,9 @@ export type TransactionType =
   | "member_adjustment"
   | "fund_loan_given"
   | "fund_loan_payment"
-  | "closing_distribution";
+  | "closing_distribution"
+  | "member_joining"
+  | "member_leaving";
 
 export interface FinancialTransactionDoc {
   _id: Id;
@@ -564,7 +607,7 @@ export interface FinancialTransactionDoc {
   description: string;
   memberId?: Id | null;
   eventName?: string;
-  sourceType?: "payment" | "donation" | "expense" | "loan" | "loanRepayment" | "transfer" | "account" | "adjustment" | "interestRun" | "withdrawal" | "memberOpening" | "memberAdjustment" | "cashEntry" | "fundLoan" | "fundLoanPayment" | "settlement";
+  sourceType?: "payment" | "donation" | "expense" | "loan" | "loanRepayment" | "transfer" | "account" | "adjustment" | "interestRun" | "withdrawal" | "memberOpening" | "memberAdjustment" | "cashEntry" | "fundLoan" | "fundLoanPayment" | "settlement" | "joining" | "leaving";
   sourceId?: Id;
   reversalOf?: Id | null;
   reversedBy?: Id | null;
