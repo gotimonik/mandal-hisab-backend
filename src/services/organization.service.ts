@@ -310,8 +310,8 @@ async function ensureMemberForUser(ctx: OrgContext, membershipId: ObjectId, user
   return member._id;
 }
 
-const DISCOVER_PROJECTION = { name: 1, city: 1, description: 1, "settings.membership": 1 } as const;
-type DiscoverHit = Pick<OrganizationDoc, "_id" | "name" | "city" | "description" | "settings">;
+const DISCOVER_PROJECTION = { name: 1, city: 1, description: 1, logoUrl: 1, "settings.membership": 1 } as const;
+type DiscoverHit = Pick<OrganizationDoc, "_id" | "name" | "city" | "description" | "logoUrl" | "settings">;
 
 /** null = not tried yet; false = this server has no Atlas Search (local mongod / tests). */
 let atlasSearchAvailable: boolean | null = null;
@@ -391,6 +391,7 @@ export async function searchOrganizations(auth: AuthContext, q: string) {
     name: o.name,
     city: o.city ?? null,
     description: o.description ?? null,
+    logoUrl: o.logoUrl ?? null,
     acceptsJoinRequests: o.settings?.membership?.allowJoinRequests !== false,
     myStatus: mine.find((m) => m.organizationId.equals(o._id))?.status ?? null,
   }));
@@ -400,7 +401,7 @@ export async function lookupByCode(code: string) {
   const c = await cols();
   const org = await c.organizations.findOne({ code: code.trim().toUpperCase(), status: { $in: ["active", "pending"] } });
   if (!org) throw notFound("Organization");
-  return { id: org._id, name: org.name, city: org.city ?? null, status: org.status };
+  return { id: org._id, name: org.name, city: org.city ?? null, logoUrl: org.logoUrl ?? null, status: org.status };
 }
 
 export const JoinSchema = z
@@ -733,12 +734,12 @@ export async function previewInvitation(auth: AuthContext, token: string) {
   const inv = await c.invitations.findOne({ tokenHash: hashToken(token) });
   if (!inv || inv.status !== "pending" || inv.expiresAt <= new Date()) throw badRequest("This invitation is invalid, already used or has expired. Ask the Mandal admin for a new one.");
   const [org, inviter, member] = await Promise.all([
-    c.organizations.findOne({ _id: inv.organizationId }, { projection: { name: 1, city: 1, status: 1 } }),
+    c.organizations.findOne({ _id: inv.organizationId }, { projection: { name: 1, city: 1, logoUrl: 1, status: 1 } }),
     c.users.findOne({ _id: inv.invitedBy }, { projection: { name: 1 } }),
     inv.memberId ? c.members.findOne({ _id: inv.memberId }, { projection: { name: 1, membershipNumber: 1 } }) : Promise.resolve(null),
   ]);
   return {
-    organization: org ? { _id: org._id, name: org.name, city: org.city ?? null } : null,
+    organization: org ? { _id: org._id, name: org.name, city: org.city ?? null, logoUrl: org.logoUrl ?? null } : null,
     invitedByName: inviter?.name ?? null,
     role: inv.role,
     email: inv.email,
@@ -776,7 +777,7 @@ export async function declineInvitation(auth: AuthContext, id: ObjectId) {
 export async function myInvitations(auth: AuthContext) {
   const c = await cols();
   const invs = await c.invitations.find({ email: auth.user.email, status: "pending", expiresAt: { $gt: new Date() } }).sort({ createdAt: -1 }).toArray();
-  const orgs = await c.organizations.find({ _id: { $in: invs.map((i) => i.organizationId) } }, { projection: { name: 1, city: 1, status: 1 } }).toArray();
+  const orgs = await c.organizations.find({ _id: { $in: invs.map((i) => i.organizationId) } }, { projection: { name: 1, city: 1, logoUrl: 1, status: 1 } }).toArray();
   const users = await c.users.find({ _id: { $in: invs.map((i) => i.invitedBy) } }, { projection: { name: 1 } }).toArray();
   return invs
     .filter((i) => orgs.some((o) => o._id.equals(i.organizationId) && o.status !== "suspended" && o.status !== "archived"))
@@ -872,6 +873,7 @@ export async function platformListOrganizations(status?: string, q?: string) {
         $project: {
           name: 1,
           code: 1,
+          logoUrl: 1,
           city: 1,
           state: 1,
           status: 1,
