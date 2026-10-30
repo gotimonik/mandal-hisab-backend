@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { ObjectId } from "mongodb";
-import { addUser, api, ok, setupOrg, uniq } from "../helpers/api";
+import { addUser, api, makePlatformAdmin, ok, registerAndLogin, setupOrg, uniq } from "../helpers/api";
 import { cols } from "@/lib/collections";
 import { sendNotificationPush, sentPushes, setPushTransport } from "@/services/push.service";
 
@@ -98,5 +98,36 @@ describe("phone push notifications", () => {
     expect(listHi.items.find((n: any) => n.type === "payment.request").title).toBe("Kiran Shah ने भुगतान किया");
     expect(listHi.items.find((n: any) => n.type === "membership.request").title).toBe("जुड़ने की नई माँग");
     expect((await api("PATCH", "/auth/me", { token: o.admin.token, body: { language: "fr" } })).status).toBe(422);
+  });
+
+  it("tells platform admins on their phones when a new Mandal waits for approval", async () => {
+    const pa = await registerAndLogin("Platform Admin");
+    await makePlatformAdmin(pa.userId);
+    const paPhone = token();
+    await ok(api("POST", "/me/push-devices", { token: pa.token, body: { token: paPhone, platform: "android" } }));
+
+    const creator = await registerAndLogin("Ramesh Patel");
+    const name = `Jay Ambe Mandal ${uniq()}`;
+    const org = await ok(api("POST", "/organizations", { token: creator.token, body: { name, city: "Surat" } }));
+    expect(org.status).toBe("pending");
+    await wait(300);
+
+    const pushes = sentPushes.filter((p) => p.token === paPhone);
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0].title).toBe(`New Mandal to approve · ${name}`);
+    expect(pushes[0].body).toBe(`${name}, Surat — registered by Ramesh Patel. Tap to review and approve.`);
+    expect(pushes[0].data.link).toBe("/platform?status=pending");
+
+    // approving it clears the alert for every platform admin
+    const c = await cols();
+    const q = { organizationId: new ObjectId(org.id as string), type: "platform.orgPending" };
+    expect(await c.notifications.countDocuments({ ...q, readAt: null })).toBeGreaterThanOrEqual(1);
+    await ok(api("PATCH", `/platform/organizations/${org.id}`, { token: pa.token, body: { action: "approve" } }));
+    expect(await c.notifications.countDocuments({ ...q, readAt: null })).toBe(0);
+
+    // a Mandal created by a platform admin is active at once: nobody is asked to approve it
+    const own = await ok(api("POST", "/organizations", { token: pa.token, body: { name: `Own ${uniq()}` } }));
+    expect(own.status).toBe("active");
+    expect(await c.notifications.countDocuments({ organizationId: new ObjectId(own.id as string), type: "platform.orgPending" })).toBe(0);
   });
 });
