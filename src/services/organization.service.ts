@@ -221,6 +221,7 @@ export async function createOrganization(auth: AuthContext, input: z.infer<typeo
         );
       });
       await afterCreate(auth, org, input);
+      if (status === "pending") await notifyPlatformAdmins(auth, org);
       return publicOrg((await c.organizations.findOne({ _id: org._id }))!);
     } catch (e) {
       if (isDuplicateKeyError(e)) continue; // code/slug collision → retry
@@ -228,6 +229,29 @@ export async function createOrganization(auth: AuthContext, input: z.infer<typeo
     }
   }
   throw conflict("Could not create organization, please try again");
+}
+
+/**
+ * A new Mandal is waiting for approval: tell every platform admin (in-app + phone push), so it
+ * gets approved quickly. Tapping it opens the pending list. Never fails the creation itself.
+ */
+async function notifyPlatformAdmins(auth: AuthContext, org: OrganizationDoc) {
+  try {
+    const c = await cols();
+    const admins = await c.users.find({ isPlatformAdmin: true, status: "active", _id: { $ne: auth.user._id } }, { projection: { _id: 1 } }).toArray();
+    for (const a of admins) {
+      await notify({
+        organizationId: org._id,
+        userId: a._id,
+        type: "platform.orgPending",
+        copy: copy("platform.orgPending", { name: org.name, city: org.city ?? "", creator: auth.user.name }, org.settings.currency),
+        link: "/platform?status=pending",
+        dedupeKey: `org-pending:${org._id}`,
+      });
+    }
+  } catch (e) {
+    console.error("[platform] could not notify platform admins about a new Mandal", e);
+  }
 }
 
 /** Creator as member + monthly hapta set-up (outside the creation transaction; both idempotent). */
@@ -792,6 +816,8 @@ export async function platformUpdateOrganization(auth: AuthContext, orgId: Objec
   if (!t.from.includes(org.status)) throw badRequest(`Cannot ${input.action} an organization that is ${org.status}`);
   if ((input.action === "suspend" || input.action === "archive") && !input.reason) throw badRequest("A reason is required");
   await c.organizations.updateOne({ _id: orgId }, { $set: { status: t.to, statusReason: input.reason, updatedAt: new Date() } });
+  // it's been handled: clear the "new Mandal to approve" alert for every platform admin (and their badge)
+  if (org.status === "pending") await c.notifications.updateMany({ organizationId: orgId, type: "platform.orgPending", readAt: null }, { $set: { readAt: new Date() } });
   await audit({ organizationId: orgId, actorId: auth.user._id, action: `platform.organization.${input.action}`, entityType: "organization", entityId: orgId, before: { status: org.status }, after: { status: t.to }, reason: input.reason });
   const admins = await c.organizationMemberships.find({ organizationId: orgId, role: "admin", status: "active" }).toArray();
   for (const a of admins) {

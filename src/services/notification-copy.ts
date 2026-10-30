@@ -238,6 +238,13 @@ const COPY = {
     hi: (f) => ({ title: { active: "मंडल मंज़ूर", suspended: "मंडल निलंबित", rejected: "मंडल मंज़ूर नहीं हुआ", closed: "मंडल बंद", archived: "मंडल आर्काइव हुआ" }[f.s("status")] ?? `मंडल ${f.s("status")}`, body: `${{ active: "आपका मंडल मंज़ूर हो गया और इस्तेमाल के लिए तैयार है।", suspended: "आपका मंडल निलंबित किया गया है।", rejected: "आपका मंडल मंज़ूर नहीं हुआ।", closed: "आपका मंडल बंद हो गया।", archived: "आपका मंडल आर्काइव हुआ — इसका हिसाब पढ़ने के लिए उपलब्ध रहेगा।" }[f.s("status")] ?? `आपका मंडल अब ${f.s("status")} है।`}${reason(f) ? ` ${reason(f)}` : ""}` }),
   },
 
+  /* ---- platform admin */
+  "platform.orgPending": {
+    en: (f) => ({ title: "New Mandal to approve", body: `${f.s("name")}${f.has("city") ? `, ${f.s("city")}` : ""} — registered by ${f.s("creator")}. Tap to review and approve.` }),
+    gu: (f) => ({ title: "મંજૂર કરવા નવું મંડળ", body: `${f.s("name")}${f.has("city") ? `, ${f.s("city")}` : ""} — ${f.s("creator")} એ નોંધાવ્યું. જોઈને મંજૂર કરવા ટૅપ કરો.` }),
+    hi: (f) => ({ title: "मंज़ूरी के लिए नया मंडल", body: `${f.s("name")}${f.has("city") ? `, ${f.s("city")}` : ""} — ${f.s("creator")} ने रजिस्टर किया। देखकर मंज़ूर करने के लिए टैप करें।` }),
+  },
+
   /* ---- closing the Mandal */
   "settlement.started": {
     en: (f) => ({ title: "The Mandal is closing", body: `Your final payout will be ${f.m("netPaise")}: savings ${f.m("savingsPaise")}${f.has("mandalSharePaise") ? ` + your share of the Mandal's money ${f.m("mandalSharePaise")}` : ""}${f.has("upadOwedPaise") ? ` − upad still owed ${f.m("upadOwedPaise")}` : ""}.` }),
