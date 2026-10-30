@@ -153,6 +153,8 @@ export interface InterestSettings {
 export interface OrganizationDoc extends Timestamps {
   _id: Id;
   name: string;
+  /** English-letter spellings of a Gujarati/Hindi name, for search (lib/transliterate). Null for English names. */
+  nameLatin?: string | null;
   code: string; // unique short join code
   slug: string;
   logoUrl?: string;

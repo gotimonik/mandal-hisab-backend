@@ -3,6 +3,8 @@ import { ObjectId } from "mongodb";
 import { z } from "zod";
 import { env } from "@/config/env";
 import { cols } from "@/lib/collections";
+import { ORG_SEARCH_INDEX } from "@/lib/search-index";
+import { latinName } from "@/lib/transliterate";
 import { withTransaction } from "@/lib/db";
 import { hashToken, joinCode, randomToken } from "@/lib/crypto";
 import { AppError, badRequest, conflict, forbidden, isDuplicateKeyError, notFound } from "@/lib/errors";
@@ -174,6 +176,7 @@ export async function createOrganization(auth: AuthContext, input: z.infer<typeo
       _id: new ObjectId(),
       ...profile,
       name: input.name,
+      nameLatin: latinName(input.name),
       code: joinCode(),
       slug: attempt === 0 ? base : `${base}-${joinCode(4).toLowerCase()}`,
       status,
@@ -297,14 +300,81 @@ async function ensureMemberForUser(ctx: OrgContext, membershipId: ObjectId, user
   return member._id;
 }
 
-/** Find Mandals by name (only those that allow being discovered). Returns no financial data. */
-export async function searchOrganizations(auth: AuthContext, q: string) {
+const DISCOVER_PROJECTION = { name: 1, city: 1, description: 1, "settings.membership": 1 } as const;
+type DiscoverHit = Pick<OrganizationDoc, "_id" | "name" | "city" | "description" | "settings">;
+
+/** null = not tried yet; false = this server has no Atlas Search (local mongod / tests). */
+let atlasSearchAvailable: boolean | null = null;
+
+/** Mongo error codes meaning "$search isn't supported here" rather than a real failure. */
+const NO_SEARCH_CODES = new Set([40324 /* unknown stage */, 31082 /* SearchNotEnabled */, 6047401]);
+
+/**
+ * Relevance-ranked Mandal search on the Atlas Search index: prefix matches as you type,
+ * one-letter typo tolerance, any word order, and city as well as name.
+ */
+async function atlasSearchOrgs(term: string): Promise<DiscoverHit[]> {
   const c = await cols();
-  const rx = q.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const orgs = await c.organizations
-    .find({ status: "active", name: { $regex: rx, $options: "i" }, "settings.membership.discoverable": { $ne: false } }, { projection: { name: 1, city: 1, description: 1, "settings.membership": 1 } })
+  const fuzzy = term.length >= 4 ? { fuzzy: { maxEdits: 1, prefixLength: 1 } } : {};
+  return c.organizations
+    .aggregate<DiscoverHit>([
+      {
+        $search: {
+          index: ORG_SEARCH_INDEX,
+          compound: {
+            should: [
+              { autocomplete: { query: term, path: "name", ...fuzzy, score: { boost: { value: 3 } } } },
+              { text: { query: term, path: "name", ...fuzzy } },
+              // Gujarati/Hindi names typed in English letters ("goti" → ગોટી)
+              { autocomplete: { query: term, path: "nameLatin", ...fuzzy, score: { boost: { value: 2 } } } },
+              { text: { query: term, path: "nameLatin", ...fuzzy } },
+              { autocomplete: { query: term, path: "city" } },
+            ],
+            minimumShouldMatch: 1,
+            filter: [{ equals: { path: "status", value: "active" } }],
+            mustNot: [{ equals: { path: "settings.membership.discoverable", value: false } }],
+          },
+        },
+      },
+      { $limit: 20 },
+      { $project: DISCOVER_PROJECTION },
+    ])
+    .toArray();
+}
+
+/** Plain substring match on the name (or its English spelling): used without Atlas Search, or when it finds nothing. */
+async function regexSearchOrgs(term: string): Promise<DiscoverHit[]> {
+  const c = await cols();
+  const rx = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return c.organizations
+    .find(
+      { status: "active", $or: [{ name: { $regex: rx, $options: "i" } }, { nameLatin: { $regex: rx, $options: "i" } }], "settings.membership.discoverable": { $ne: false } },
+      { projection: DISCOVER_PROJECTION },
+    )
     .limit(20)
     .toArray();
+}
+
+async function findDiscoverableOrgs(term: string): Promise<DiscoverHit[]> {
+  if (atlasSearchAvailable !== false) {
+    try {
+      const hits = await atlasSearchOrgs(term);
+      atlasSearchAvailable = true;
+      // Empty can also mean the index is missing or still building: the regex covers that.
+      if (hits.length) return hits;
+    } catch (e) {
+      const code = (e as { code?: number }).code;
+      if (code !== undefined && NO_SEARCH_CODES.has(code)) atlasSearchAvailable = false;
+      else console.warn("Atlas Search failed, falling back to regex", e);
+    }
+  }
+  return regexSearchOrgs(term);
+}
+
+/** Find Mandals by name or city (only those that allow being discovered). Returns no financial data. */
+export async function searchOrganizations(auth: AuthContext, q: string) {
+  const c = await cols();
+  const orgs = await findDiscoverableOrgs(q.trim());
   const mine = await c.organizationMemberships.find({ userId: auth.user._id, organizationId: { $in: orgs.map((o) => o._id) } }, { projection: { organizationId: 1, status: 1 } }).toArray();
   return orgs.map((o) => ({
     id: o._id,
@@ -384,6 +454,7 @@ export async function updateOrganization(ctx: OrgContext, input: z.infer<typeof 
   const { settings, ...profile } = input;
   const $set: Record<string, unknown> = { updatedAt: new Date() };
   for (const [k, v] of Object.entries(profile)) if (v !== undefined) $set[k] = v;
+  if (profile.name !== undefined) $set.nameLatin = latinName(profile.name);
   if (settings) {
     if (settings.expenseCategories) {
       // categories referenced by the ledger must never disappear; deactivate instead
