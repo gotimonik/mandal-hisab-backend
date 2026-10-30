@@ -153,7 +153,9 @@ export interface InterestSettings {
 export interface OrganizationDoc extends Timestamps {
   _id: Id;
   name: string;
-  /** English-letter spellings of a Gujarati/Hindi name, for search (lib/transliterate). Null for English names. */
+  /** Spellings admins added in settings so people find the Mandal in English ("Goti Parivar, Gotee"). */
+  nameEnglish?: string | null;
+  /** Search-only: automatic English spellings of a Gujarati/Hindi name + nameEnglish (lib/transliterate). */
   nameLatin?: string | null;
   code: string; // unique short join code
   slug: string;

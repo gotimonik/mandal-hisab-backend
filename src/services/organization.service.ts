@@ -4,7 +4,7 @@ import { z } from "zod";
 import { env } from "@/config/env";
 import { cols } from "@/lib/collections";
 import { ORG_SEARCH_INDEX } from "@/lib/search-index";
-import { latinName } from "@/lib/transliterate";
+import { searchSpellings, suggestEnglishName } from "@/lib/transliterate";
 import { withTransaction } from "@/lib/db";
 import { hashToken, joinCode, randomToken } from "@/lib/crypto";
 import { AppError, badRequest, conflict, forbidden, isDuplicateKeyError, notFound } from "@/lib/errors";
@@ -64,6 +64,13 @@ export const CreateOrgSchema = z.object({
 
 export const UpdateOrgSchema = z.object({
   name: z.string().trim().min(3).max(120).optional(),
+  /** Extra English spellings for search; "" clears them. */
+  nameEnglish: z
+    .string()
+    .trim()
+    .max(200)
+    .regex(/^[A-Za-z0-9 ,.'&()/-]*$/, "Use English letters for the English name")
+    .optional(),
   description: optText(500),
   ...OrgProfileFields,
   settings: z
@@ -151,6 +158,9 @@ export function publicOrg(o: OrganizationDoc) {
     contactEmail: o.contactEmail ?? null,
     registrationNumber: o.registrationNumber ?? null,
     registrationDetails: o.registrationDetails ?? null,
+    nameEnglish: o.nameEnglish ?? null,
+    /** Shown as the placeholder of the English-name field in settings. */
+    nameEnglishSuggestion: suggestEnglishName(o.name),
     status: o.status,
     statusReason: o.statusReason ?? null,
     settings: o.settings,
@@ -176,7 +186,7 @@ export async function createOrganization(auth: AuthContext, input: z.infer<typeo
       _id: new ObjectId(),
       ...profile,
       name: input.name,
-      nameLatin: latinName(input.name),
+      nameLatin: searchSpellings(input.name),
       code: joinCode(),
       slug: attempt === 0 ? base : `${base}-${joinCode(4).toLowerCase()}`,
       status,
@@ -454,7 +464,12 @@ export async function updateOrganization(ctx: OrgContext, input: z.infer<typeof 
   const { settings, ...profile } = input;
   const $set: Record<string, unknown> = { updatedAt: new Date() };
   for (const [k, v] of Object.entries(profile)) if (v !== undefined) $set[k] = v;
-  if (profile.name !== undefined) $set.nameLatin = latinName(profile.name);
+  if (profile.nameEnglish !== undefined) $set.nameEnglish = profile.nameEnglish || null;
+  if (profile.name !== undefined || profile.nameEnglish !== undefined) {
+    const name = profile.name ?? ctx.org.name;
+    const nameEnglish = profile.nameEnglish !== undefined ? profile.nameEnglish || null : (ctx.org.nameEnglish ?? null);
+    $set.nameLatin = searchSpellings(name, nameEnglish);
+  }
   if (settings) {
     if (settings.expenseCategories) {
       // categories referenced by the ledger must never disappear; deactivate instead

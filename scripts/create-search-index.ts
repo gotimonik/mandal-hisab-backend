@@ -1,7 +1,8 @@
 /**
  * Prepare Mandal search. Safe to run repeatedly.
  *   npm run db:search-index
- * 1. Fills in `nameLatin` (English spelling of Gujarati/Hindi names) where it is missing or stale.
+ * 1. Fills in `nameLatin` (English spellings of Gujarati/Hindi names + the ones admins added) where
+ *    it is missing or stale.
  * 2. Creates or updates the Atlas Search index. It builds in the background; search falls back
  *    to a regex until it is ready.
  */
@@ -9,14 +10,14 @@ import "./load-env";
 import { cols } from "../src/lib/collections";
 import { closeDb } from "../src/lib/db";
 import { ORG_SEARCH_DEFINITION, ORG_SEARCH_INDEX } from "../src/lib/search-index";
-import { latinName } from "../src/lib/transliterate";
+import { searchSpellings } from "../src/lib/transliterate";
 
 async function main() {
   const c = await cols();
 
   let changed = 0;
-  for await (const o of c.organizations.find({}, { projection: { name: 1, nameLatin: 1 } })) {
-    const next = latinName(o.name);
+  for await (const o of c.organizations.find({}, { projection: { name: 1, nameEnglish: 1, nameLatin: 1 } })) {
+    const next = searchSpellings(o.name, o.nameEnglish);
     if ((o.nameLatin ?? null) === next) continue;
     await c.organizations.updateOne({ _id: o._id }, { $set: { nameLatin: next } });
     console.info(`  ${o.name} → ${next ?? "(English name, none needed)"}`);

@@ -372,10 +372,30 @@ describe("two Mandals for the same person stay isolated", () => {
 
   it("finds a Gujarati-named Mandal when searched in English letters", async () => {
     const goti = await createMandal("ગોટી પરિવાર મંડળ", "500", START);
-    for (const q of ["goti", "Goti Parivar", "ગોટી"]) {
+    const finds = async (q: string) => {
       const found = await ok<any[]>(api("GET", `/organizations/search?q=${encodeURIComponent(q)}`, { token: user.token }));
-      expect(found.some((f) => f.id === goti.orgId), q).toBe(true);
-    }
+      return found.some((f) => f.id === goti.orgId);
+    };
+    for (const q of ["goti", "Goti Parivar", "ગોટી"]) expect(await finds(q), q).toBe(true);
+
+    // admins can add their own English spellings in settings
+    const org = await ok(api("GET", `/orgs/${goti.orgId}`, { token: goti.admin.token }));
+    expect(org.nameEnglishSuggestion).toBe("Goti Parivar Mandal");
+    expect(org.nameEnglish).toBeNull();
+    expect(await finds("gotiya")).toBe(false);
+    const saved = await ok(api("PATCH", `/orgs/${goti.orgId}`, { token: goti.admin.token, body: { nameEnglish: "Gotiya Family" } }));
+    expect(saved.nameEnglish).toBe("Gotiya Family");
+    expect(await finds("gotiya")).toBe(true);
+    expect(await finds("goti")).toBe(true); // the automatic spellings stay
+
+    // renaming keeps the admin's spelling; clearing it removes it
+    await ok(api("PATCH", `/orgs/${goti.orgId}`, { token: goti.admin.token, body: { name: "ગોટી પરિવાર સેવા મંડળ" } }));
+    expect(await finds("gotiya")).toBe(true);
+    expect(await finds("seva")).toBe(true);
+    await ok(api("PATCH", `/orgs/${goti.orgId}`, { token: goti.admin.token, body: { nameEnglish: "" } }));
+    expect(await finds("gotiya")).toBe(false);
+
+    expect((await api("PATCH", `/orgs/${goti.orgId}`, { token: goti.admin.token, body: { nameEnglish: "ગોટી" } })).status).toBe(422);
   });
 
   it("finds a Mandal by name or code, requests to join and gets a member record on approval", async () => {
