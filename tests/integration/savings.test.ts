@@ -370,6 +370,14 @@ describe("two Mandals for the same person stay isolated", () => {
     user = await registerAndLogin("Gaurav Both");
   });
 
+  it("finds a Gujarati-named Mandal when searched in English letters", async () => {
+    const goti = await createMandal("ગોટી પરિવાર મંડળ", "500", START);
+    for (const q of ["goti", "Goti Parivar", "ગોટી"]) {
+      const found = await ok<any[]>(api("GET", `/organizations/search?q=${encodeURIComponent(q)}`, { token: user.token }));
+      expect(found.some((f) => f.id === goti.orgId), q).toBe(true);
+    }
+  });
+
   it("finds a Mandal by name or code, requests to join and gets a member record on approval", async () => {
     const found = await ok<any[]>(api("GET", `/organizations/search?q=${encodeURIComponent("College Friends")}`, { token: user.token }));
     const hit = found.find((f) => f.id === college.orgId || f._id === college.orgId);
