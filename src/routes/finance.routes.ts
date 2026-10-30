@@ -10,7 +10,7 @@ import * as de from "@/services/donation-expense.service";
 import * as loans from "@/services/loan.service";
 import * as reports from "@/services/report.service";
 import { runDailyJobs } from "@/services/jobs.service";
-import { uploadAttachment } from "@/services/upload.service";
+import { formFile, uploadAttachment } from "@/services/upload.service";
 import type { Permission } from "@/lib/permissions";
 
 const W = { write: true } as const;
@@ -149,14 +149,7 @@ export function registerFinanceRoutes(r: Router) {
   /* ---------------- attachments */
   r.post("/orgs/:orgId/uploads", async (req) => {
     const ctx = await req.org("expenses.submit", W);
-    const ct = req.raw.headers.get("content-type") ?? "";
-    if (!ct.includes("multipart/form-data")) throw badRequest("Use multipart/form-data with a 'file' field");
-    const len = Number(req.raw.headers.get("content-length") ?? 0);
-    if (len > env().MAX_UPLOAD_BYTES + 10_000) throw badRequest("File too large");
-    const form = await req.raw.formData();
-    const file = form.get("file");
-    if (!(file instanceof File)) throw badRequest("Missing file");
-    return uploadAttachment(ctx, file);
+    return uploadAttachment(ctx, await formFile(req, env().MAX_UPLOAD_BYTES, "File too large"));
   });
 
   /* ---------------- scheduled jobs (Vercel Cron) */

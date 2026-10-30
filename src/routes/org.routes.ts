@@ -11,6 +11,7 @@ import * as receiptService from "@/services/receipt.service";
 import * as accountService from "@/services/account.service";
 import { dateOnly, optText, reason, pagination } from "@/validators/common";
 import * as membership from "@/services/membership.service";
+import { formFile, LOGO_MAX_BYTES, LOGO_TOO_BIG, removeOrgLogo, uploadOrgLogo } from "@/services/upload.service";
 
 const W = { write: true } as const;
 
@@ -20,6 +21,11 @@ export function registerOrgRoutes(r: Router) {
   r.patch("/orgs/:orgId", async (req) =>
     orgService.updateOrganization(await req.org("org.settings.manage", { write: true, allowPending: true }), await req.body(orgService.UpdateOrgSchema)),
   );
+  r.post("/orgs/:orgId/logo", async (req) => {
+    const ctx = await req.org("org.settings.manage", { write: true, allowPending: true });
+    return uploadOrgLogo(ctx, await formFile(req, LOGO_MAX_BYTES, LOGO_TOO_BIG));
+  });
+  r.delete("/orgs/:orgId/logo", async (req) => removeOrgLogo(await req.org("org.settings.manage", { write: true, allowPending: true })));
 
   /* ---------------- app users & roles */
   r.get("/orgs/:orgId/memberships", async (req) => {

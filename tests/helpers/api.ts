@@ -16,7 +16,7 @@ let ipCounter = 0;
 export async function api<T = any>(
   method: string,
   path: string,
-  opts: { token?: string; body?: unknown } = {},
+  opts: { token?: string; body?: unknown; form?: FormData } = {},
 ): Promise<ApiResult<T>> {
   const headers: Record<string, string> = { "x-forwarded-for": `10.0.0.${(ipCounter++ % 250) + 1}` };
   if (opts.token) headers.authorization = `Bearer ${opts.token}`;
@@ -24,7 +24,8 @@ export async function api<T = any>(
   const req = new NextRequest(`http://localhost/api/v1${path}`, {
     method,
     headers,
-    body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+    // multipart: the Request sets the content-type (with its boundary) itself
+    body: opts.form ?? (opts.body !== undefined ? JSON.stringify(opts.body) : undefined),
   });
   const res = await handler(req);
   const ct = res.headers.get("content-type") ?? "";
