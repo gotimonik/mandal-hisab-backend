@@ -8,7 +8,7 @@ import { todayIn } from "@/lib/dates";
 import type { OrgContext } from "@/lib/auth";
 import type { UpadRequestDoc } from "@/types/models";
 import { dateOnly, idempotencyKey, money, optText, rateString } from "@/validators/common";
-import { balanceOf } from "./account.service";
+import { availableCashPaise } from "./account.service";
 import { fundLoanTotals, giveFundLoan } from "./fund-loan.service";
 import { notifyMember, notifyRoles } from "./notification.service";
 import { copy } from "./notification-copy";
@@ -20,14 +20,7 @@ import { copy } from "./notification-copy";
  * One open request per member at a time.
  */
 
-/** Cash the Mandal holds right now, across its active cash / bank / UPI accounts. */
-export async function availableCashPaise(orgId: ObjectId) {
-  const c = await cols();
-  const accounts = await c.financialAccounts.find({ organizationId: orgId, isActive: true }, { projection: { _id: 1 } }).toArray();
-  let total = 0;
-  for (const a of accounts) total += await balanceOf(orgId, a._id);
-  return Math.max(0, total);
-}
+export { availableCashPaise };
 
 export const UpadRequestSchema = z.object({
   amount: money(),
@@ -79,6 +72,7 @@ export async function requestUpad(ctx: OrgContext, input: z.infer<typeof UpadReq
   }
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "upadRequest.create", entityType: "upadRequest", entityId: doc._id, after: { memberId, amountPaise: input.amount } });
   await notifyRoles(ctx.orgId, ["admin"], {
+    actorId: ctx.user._id,
     type: "upadRequest.new",
     copy: copy("upadRequest.new", { member: member.name, amountPaise: input.amount, purpose: input.purpose ?? "" }, ctx.org.settings.currency),
     link: `/org/${ctx.orgId}/fund-loans`,
@@ -167,6 +161,6 @@ export async function rejectUpadRequest(ctx: OrgContext, id: ObjectId, reasonTex
   const r = await c.upadRequests.updateOne({ _id: id, status: "pending" }, { $set: { status: "rejected", decisionReason: reasonText, decidedBy: ctx.user._id, decidedAt: new Date(), updatedAt: new Date() } });
   if (r.modifiedCount !== 1) throw conflict(`This request is already ${req.status}`);
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "upadRequest.reject", entityType: "upadRequest", entityId: id, reason: reasonText });
-  await notifyMember(ctx.orgId, req.memberId, { type: "upadRequest.rejected", copy: copy("upadRequest.rejected", { amountPaise: req.amountPaise, reason: reasonText }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/my`, dedupeKey: `upadreq-rej:${id}` });
+  await notifyMember(ctx.orgId, req.memberId, { actorId: ctx.user._id, type: "upadRequest.rejected", copy: copy("upadRequest.rejected", { amountPaise: req.amountPaise, reason: reasonText }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/my`, dedupeKey: `upadreq-rej:${id}` });
   return { ok: true };
 }

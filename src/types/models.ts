@@ -906,6 +906,26 @@ export interface UpadRequestDoc {
   updatedAt: Date;
 }
 
+/** A Mandal meet-up the admin announced to every member. */
+export interface MeetingDoc {
+  _id: Id;
+  organizationId: Id;
+  /** calendar day (UTC midnight) */
+  date: Date;
+  /** "HH:mm", 24-hour, in the Mandal's timezone */
+  time: string;
+  place: string;
+  /** anything else happening that day */
+  events?: string;
+  status: "scheduled" | "cancelled";
+  cancelReason?: string;
+  cancelledAt?: Date;
+  createdBy: Id;
+  idempotencyKey: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 /** A member reports paying upad interest / returning upad; an admin verifies (→ FundLoanPaymentDoc) or rejects. */
 export interface UpadPaymentClaimDoc {
   _id: Id;

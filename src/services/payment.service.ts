@@ -198,6 +198,7 @@ export async function recordPayment(ctx: OrgContext, input: z.infer<typeof Recor
     if (payment.status === "verified") await afterVerify(ctx, payment);
     else
       await notifyRoles(ctx.orgId, ["admin"], {
+        actorId: ctx.user._id,
         type: "payment.pending",
         copy: copy("payment.pending", { amountPaise: doc.amountPaise, payer: doc.payerName ?? "a member" }, ctx.org.settings.currency),
         link: `/org/${ctx.orgId}/collections?status=pending`,
@@ -264,6 +265,7 @@ export async function submitMemberPaymentRequest(ctx: OrgContext, input: z.infer
   }
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "payment.member_request", entityType: "payment", entityId: doc._id, after: { amountPaise: doc.amountPaise } });
   await notifyRoles(ctx.orgId, ["admin", "manager"], {
+    actorId: ctx.user._id,
     type: "payment.request",
     copy: copy("payment.request", { member: member?.name ?? "A member", amountPaise: doc.amountPaise, purpose: isHapta ? "hapta" : "other", note: input.notes ?? "", scheme: schemeId ? ((await c.haptaSchemes.findOne({ _id: schemeId }, { projection: { name: 1 } }))?.name ?? "") : "", method: doc.method }, ctx.org.settings.currency),
     link: `/org/${ctx.orgId}/collections?status=pending`,
@@ -418,6 +420,7 @@ async function verifyInSession(ctx: OrgContext, paymentId: ObjectId, accountOver
 
 async function afterVerify(ctx: OrgContext, p: PaymentDoc) {
   await notifyMember(ctx.orgId, p.memberId, {
+    actorId: ctx.user._id,
     type: "payment.verified",
     copy: copy("payment.verified", { amountPaise: p.amountPaise }, ctx.org.settings.currency),
     link: p.receiptId ? `/org/${ctx.orgId}/receipts/${p.receiptId}` : `/org/${ctx.orgId}/my`,
@@ -441,6 +444,7 @@ export async function rejectPayment(ctx: OrgContext, id: ObjectId, reasonText: s
   if (!r) throw conflict("Only pending payments can be rejected");
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "payment.reject", entityType: "payment", entityId: id, reason: reasonText });
   await notifyMember(ctx.orgId, r.memberId, {
+    actorId: ctx.user._id,
     type: "payment.rejected",
     copy: copy("payment.rejected", { amountPaise: r.amountPaise, reason: reasonText }, ctx.org.settings.currency),
     link: `/org/${ctx.orgId}/my`,

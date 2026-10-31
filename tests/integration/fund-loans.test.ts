@@ -242,6 +242,57 @@ describe("members requesting upad", () => {
   });
 });
 
+describe("upad notifications", () => {
+  let o: Mandal;
+  const users: Record<string, { token: string; userId: string; memberId: string }> = {};
+  let adminMember: string;
+  const types = async (token: string) => (await ok(api("GET", `/notifications?orgId=${o.orgId}&pageSize=100`, { token }))).items.map((n: any) => n.type) as string[];
+  const notes = async (token: string, type: string) => (await ok(api("GET", `/notifications?orgId=${o.orgId}&pageSize=100`, { token }))).items.filter((n: any) => n.type === type);
+
+  beforeAll(async () => {
+    o = await createMandal("Notify Mandal", "1000", JUL);
+    for (const n of ["Kiran", "Nisha"]) {
+      const memberId = (await ok(api("POST", `/orgs/${o.orgId}/members`, { token: o.admin.token, body: { name: `${n} Member`, joiningDate: "2026-07-01" } })))._id;
+      const u = await registerAndLogin(`${n} Login`);
+      await ok(api("POST", "/organizations/join", { token: u.token, body: { code: o.code } }));
+      const pending = await ok<any[]>(api("GET", `/orgs/${o.orgId}/memberships?status=pending`, { token: o.admin.token }));
+      await ok(api("PATCH", `/orgs/${o.orgId}/memberships/${pending.find((x) => x.user._id === u.userId)._id}`, { token: o.admin.token, body: { action: "approve", role: "member", memberId } }));
+      users[n] = { ...u, memberId };
+    }
+    const jul = await ok(api("GET", `/orgs/${o.orgId}/monthly?month=${JUL}`, { token: o.admin.token }));
+    for (const r of jul.rows) await ok(api("POST", `/orgs/${o.orgId}/monthly/collect`, { token: o.admin.token, body: { installmentId: r.installmentId, amount: "1000", date: "2026-07-05", idempotencyKey: uniq("c") } }));
+    const list = await ok(api("GET", `/orgs/${o.orgId}/members`, { token: o.admin.token }));
+    adminMember = list.items.find((m: any) => !Object.values(users).some((u) => u.memberId === m._id))._id;
+  });
+
+  it("an admin who asks for upad themselves isn't told about their own request", async () => {
+    const r = await ok(api("POST", `/orgs/${o.orgId}/me/upad-requests`, { token: o.admin.token, body: { amount: "500", idempotencyKey: uniq("ur") } }));
+    expect(await types(o.admin.token)).not.toContain("upadRequest.new");
+    // approving it: no "given to you" for themselves either; the other members hear about it
+    await ok(api("POST", `/orgs/${o.orgId}/upad-requests/${r.request._id}/approve`, { token: o.admin.token, body: {} }));
+    const adminTypes = await types(o.admin.token);
+    expect(adminTypes).not.toContain("fundLoan.given");
+    expect(adminTypes).not.toContain("fundLoan.announced");
+    for (const u of Object.values(users)) expect(await types(u.token)).toContain("fundLoan.announced");
+    expect(adminMember).toBeTruthy();
+  });
+
+  it("when a member's upad is approved, everyone else hears who took how much", async () => {
+    const r = await ok(api("POST", `/orgs/${o.orgId}/me/upad-requests`, { token: users.Kiran.token, body: { amount: "1000", idempotencyKey: uniq("ur") } }));
+    expect(await types(o.admin.token)).toContain("upadRequest.new"); // the admin is told about someone else's request
+    await ok(api("POST", `/orgs/${o.orgId}/upad-requests/${r.request._id}/approve`, { token: o.admin.token, body: {} }));
+    // the borrower gets their own message, not the announcement
+    const kiran = await types(users.Kiran.token);
+    expect(kiran).toContain("fundLoan.given");
+    expect(kiran.filter((t) => t === "fundLoan.announced")).toHaveLength(1); // only the admin's earlier upad
+    // the other member is told; the approving admin isn't
+    const [ann] = await notes(users.Nisha.token, "fundLoan.announced");
+    expect(ann.title).toBe("Upad given");
+    expect(ann.body).toBe("Kiran Member took ₹1,000.00 upad from the Mandal fund. Cash available now: ₹1,500.00.");
+    expect((await notes(o.admin.token, "fundLoan.announced"))).toHaveLength(0);
+  });
+});
+
 describe("'I have paid' with a purpose", () => {
   let o: Mandal;
   let mem: { token: string; userId: string };

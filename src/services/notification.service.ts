@@ -17,6 +17,8 @@ export interface NotifyInput {
   link?: string;
   /** Unique per user. Re-sending the same key is a no-op (prevents duplicate reminders). */
   dedupeKey: string;
+  /** Who did the thing this is about. They are never notified of their own action. */
+  actorId?: ObjectId | null;
 }
 
 /**
@@ -24,6 +26,7 @@ export interface NotifyInput {
  * that created it finishes. Returns true when a new notification was created.
  */
 export async function notify(n: NotifyInput, session?: ClientSession): Promise<boolean> {
+  if (n.actorId && n.actorId.equals(n.userId)) return false;
   const c = await cols();
   const en = n.copy ? renderCopy("en", n.copy) : { title: n.title ?? "", body: n.body ?? "" };
   const r = await c.notifications.updateOne(
@@ -70,6 +73,20 @@ export async function notifyRoles(
 ) {
   const c = await cols();
   const ms = await c.organizationMemberships.find({ organizationId, status: "active", role: { $in: roles } }).toArray();
+  for (const m of ms) await notify({ ...n, organizationId, userId: m.userId, dedupeKey: `${n.dedupeKey}:${m.userId}` });
+}
+
+/** Notify everyone in the Mandal (every active app user, any role), except the given users. */
+export async function notifyOrgMembers(
+  organizationId: ObjectId,
+  n: Omit<NotifyInput, "organizationId" | "userId">,
+  opts: { exceptUserIds?: (ObjectId | null | undefined)[] } = {},
+) {
+  const c = await cols();
+  const except = (opts.exceptUserIds ?? []).filter((u): u is ObjectId => !!u);
+  const ms = await c.organizationMemberships
+    .find({ organizationId, status: "active", ...(except.length ? { userId: { $nin: except } } : {}) }, { projection: { userId: 1 } })
+    .toArray();
   for (const m of ms) await notify({ ...n, organizationId, userId: m.userId, dedupeKey: `${n.dedupeKey}:${m.userId}` });
 }
 

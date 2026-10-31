@@ -128,7 +128,7 @@ export async function recordWithdrawal(ctx: OrgContext, input: z.infer<typeof Wi
       await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "withdrawal.record", entityType: "withdrawal", entityId: id, after: { number, amountPaise: input.amount, memberId, balanceAfterPaise }, reason: input.exceptionReason }, session);
       return doc;
     });
-    await notifyMember(ctx.orgId, memberId, { type: "withdrawal.paid", copy: copy("withdrawal.paid", { amountPaise: w.amountPaise, number: w.number, balancePaise: w.balanceAfterPaise }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/withdrawals/${w._id}`, dedupeKey: `wdl:${w._id}` });
+    await notifyMember(ctx.orgId, memberId, { actorId: ctx.user._id, type: "withdrawal.paid", copy: copy("withdrawal.paid", { amountPaise: w.amountPaise, number: w.number, balancePaise: w.balanceAfterPaise }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/withdrawals/${w._id}`, dedupeKey: `wdl:${w._id}` });
     return { withdrawal: w, duplicate: false };
   } catch (e) {
     if (isDuplicateKeyError(e)) {

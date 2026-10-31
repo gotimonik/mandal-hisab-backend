@@ -133,6 +133,15 @@ export async function listAccounts(ctx: OrgContext, asOf?: Date) {
 }
 
 /** Account balance at a point in time (used to stop overdrawing cash). */
+/** Cash the Mandal holds right now, across its active cash / bank / UPI accounts. */
+export async function availableCashPaise(orgId: ObjectId) {
+  const c = await cols();
+  const accounts = await c.financialAccounts.find({ organizationId: orgId, isActive: true }, { projection: { _id: 1 } }).toArray();
+  let total = 0;
+  for (const a of accounts) total += await balanceOf(orgId, a._id);
+  return Math.max(0, total);
+}
+
 export async function balanceOf(orgId: ObjectId, accountId: ObjectId, session?: ClientSession): Promise<number> {
   const c = await cols();
   const [r] = await c.ledgerEntries

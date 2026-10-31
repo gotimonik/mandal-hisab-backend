@@ -208,7 +208,7 @@ export async function finalizeInterest(ctx: OrgContext, input: z.infer<typeof Fi
       return doc;
     });
     for (const l of lines) {
-      await notifyMember(ctx.orgId, l.row.memberId, { type: "interest.credited", copy: copy("interest.credited", { amountPaise: l.amount, periodMonth: input.period }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/my`, dedupeKey: `interest:${input.period}` });
+      await notifyMember(ctx.orgId, l.row.memberId, { actorId: ctx.user._id, type: "interest.credited", copy: copy("interest.credited", { amountPaise: l.amount, periodMonth: input.period }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/my`, dedupeKey: `interest:${input.period}` });
     }
     return { run, duplicate: false };
   } catch (e) {

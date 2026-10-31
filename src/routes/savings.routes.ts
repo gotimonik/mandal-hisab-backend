@@ -14,6 +14,8 @@ import * as fl from "@/services/fund-loan.service";
 import * as ur from "@/services/upad-request.service";
 import * as mp from "@/services/member-payments.service";
 import * as orgService from "@/services/organization.service";
+import * as meetings from "@/services/meeting.service";
+import { optText } from "@/validators/common";
 import { monthlyReport, toTable } from "@/services/report.service";
 
 const W = { write: true } as const;
@@ -131,6 +133,13 @@ export function registerSavingsRoutes(r: Router) {
   r.post("/orgs/:orgId/upad-requests/:id/reject", async (req) => {
     const b = await req.body(z.object({ reason }));
     return ur.rejectUpadRequest(await req.org("withdrawals.record", W), parseObjectId(req.params.id, "Request"), b.reason);
+  });
+  /* ---------------- meet-ups: every member sees them; the admin calls or cancels one (members are notified) */
+  r.get("/orgs/:orgId/meetings", async (req) => meetings.listMeetings(await req.org("org.view")));
+  r.post("/orgs/:orgId/meetings", async (req) => meetings.createMeeting(await req.org("org.settings.manage", W), await req.body(meetings.MeetingSchema)));
+  r.post("/orgs/:orgId/meetings/:id/cancel", async (req) => {
+    const b = await req.body(z.object({ reason: optText(500) }));
+    return meetings.cancelMeeting(await req.org("org.settings.manage", W), parseObjectId(req.params.id, "Meeting"), b.reason);
   });
   /* "I have paid": options, and upad payments reported by members */
   r.get("/orgs/:orgId/me/payment-options", async (req) => mp.myPaymentOptions(await req.org("self.submitPayment")));

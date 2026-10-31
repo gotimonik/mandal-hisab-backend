@@ -10,6 +10,7 @@ import * as de from "@/services/donation-expense.service";
 import * as loans from "@/services/loan.service";
 import * as reports from "@/services/report.service";
 import { runDailyJobs } from "@/services/jobs.service";
+import { nextMeeting } from "@/services/meeting.service";
 import { formFile, uploadAttachment } from "@/services/upload.service";
 import type { Permission } from "@/lib/permissions";
 
@@ -37,9 +38,11 @@ export function registerFinanceRoutes(r: Router) {
   /* ---------------- dashboard (role specific) */
   r.get("/orgs/:orgId/dashboard", async (req) => {
     const ctx = await req.org("org.view");
-    if (ctx.role === "admin") return { role: "admin", ...(await reports.adminDashboard(ctx)) };
-    if (ctx.role === "manager") return { role: "manager", ...(await reports.managerDashboard(ctx)) };
-    return { role: "member", ...(await reports.memberDashboard(ctx)) };
+    const [dash, next] = await Promise.all([
+      ctx.role === "admin" ? reports.adminDashboard(ctx) : ctx.role === "manager" ? reports.managerDashboard(ctx) : reports.memberDashboard(ctx),
+      nextMeeting(ctx),
+    ]);
+    return { role: ctx.role, ...dash, nextMeeting: next };
   });
 
   /* ---------------- reports + CSV export (same authorization as JSON) */

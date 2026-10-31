@@ -277,7 +277,7 @@ export async function startSettlement(ctx: OrgContext, input: z.infer<typeof Sta
     await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "settlement.start", entityType: "organization", entityId: ctx.orgId, after: dist, reason: input.note }, session);
   });
   for (const r of sharers) {
-    await notifyMember(ctx.orgId, r.memberId, { type: "settlement.started", copy: copy("settlement.started", { netPaise: r.netPaise, savingsPaise: r.savingsPaise, mandalSharePaise: r.mandalSharePaise, upadOwedPaise: r.upadOwedPaise }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/my`, dedupeKey: `settle-start:${sourceId}:${r.memberId}` });
+    await notifyMember(ctx.orgId, r.memberId, { actorId: ctx.user._id, type: "settlement.started", copy: copy("settlement.started", { netPaise: r.netPaise, savingsPaise: r.savingsPaise, mandalSharePaise: r.mandalSharePaise, upadOwedPaise: r.upadOwedPaise }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/my`, dedupeKey: `settle-start:${sourceId}:${r.memberId}` });
   }
   return { sharedPaise: amount, transactionId };
 }
@@ -345,7 +345,7 @@ export async function payoutMember(ctx: OrgContext, memberId: ObjectId, input: z
   const r = await c.organizations.updateOne({ _id: ctx.orgId, "settings.settlement.payouts.memberId": { $ne: memberId } }, { $push: { "settings.settlement.payouts": payout }, $set: { updatedAt: new Date() } });
   if (r.modifiedCount !== 1) throw conflict("This member has already been paid out");
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "settlement.payout", entityType: "member", entityId: memberId, after: { ...payout, method: input.method } });
-  await notifyMember(ctx.orgId, memberId, { type: "settlement.paid", copy: copy("settlement.paid", { netPaise: net, upadPaise: upad }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/my`, dedupeKey: `settle-paid:${memberId}` });
+  await notifyMember(ctx.orgId, memberId, { actorId: ctx.user._id, type: "settlement.paid", copy: copy("settlement.paid", { netPaise: net, upadPaise: upad }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/my`, dedupeKey: `settle-paid:${memberId}` });
   return { ok: true, netPaise: net, grossPaise: gross, upadSettledPaise: upad, withdrawalId };
 }
 
@@ -373,7 +373,7 @@ export async function closeMandal(ctx: OrgContext, input: z.infer<typeof CloseSc
     { $set: { status: "archived", statusReason: `Closed and settled on ${now.toISOString().slice(0, 10)}${input.note ? ` — ${input.note}` : ""}`, "settings.settlement.closedAt": now, updatedAt: now } },
   );
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "settlement.close", entityType: "organization", entityId: ctx.orgId, reason: input.note });
-  await notifyRoles(ctx.orgId, ["admin", "manager"], { type: "settlement.closed", copy: copy("settlement.closed", {}, ctx.org.settings.currency), link: `/org/${ctx.orgId}`, dedupeKey: `settle-closed:${ctx.orgId}` });
+  await notifyRoles(ctx.orgId, ["admin", "manager"], { actorId: ctx.user._id, type: "settlement.closed", copy: copy("settlement.closed", {}, ctx.org.settings.currency), link: `/org/${ctx.orgId}`, dedupeKey: `settle-closed:${ctx.orgId}` });
   return { ok: true, closedAt: now };
 }
 

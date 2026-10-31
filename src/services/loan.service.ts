@@ -265,7 +265,7 @@ export async function approveLoan(ctx: OrgContext, id: ObjectId, input: z.infer<
   const r = await c.loans.updateOne({ _id: id, organizationId: ctx.orgId, status: "applied" }, { $set });
   if (r.modifiedCount !== 1) throw conflict("Loan changed, please reload");
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "loan.approve", entityType: "loan", entityId: id, before: { requestedPaise: l.requestedPaise, annualRate: l.annualRate }, after: $set });
-  await notifyMember(ctx.orgId, l.memberId, { type: "loan.approved", copy: copy("loan.approved", { loan: l.loanNumber, amountPaise: input.approvedAmount }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/my`, dedupeKey: `loan-approved:${id}` });
+  await notifyMember(ctx.orgId, l.memberId, { actorId: ctx.user._id, type: "loan.approved", copy: copy("loan.approved", { loan: l.loanNumber, amountPaise: input.approvedAmount }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/my`, dedupeKey: `loan-approved:${id}` });
   return getLoan(ctx, id);
 }
 
@@ -275,7 +275,7 @@ export async function rejectLoan(ctx: OrgContext, id: ObjectId, reasonText: stri
   const r = await c.loans.updateOne({ _id: id, organizationId: ctx.orgId, status: { $in: ["applied", "approved"] } }, { $set: { status: "rejected", rejectionReason: reasonText, updatedAt: new Date() } });
   if (r.modifiedCount !== 1) throw badRequest("Only applied or approved loans can be rejected");
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "loan.reject", entityType: "loan", entityId: id, reason: reasonText });
-  await notifyMember(ctx.orgId, l.memberId, { type: "loan.rejected", copy: copy("loan.rejected", { loan: l.loanNumber, reason: reasonText }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/my`, dedupeKey: `loan-rejected:${id}` });
+  await notifyMember(ctx.orgId, l.memberId, { actorId: ctx.user._id, type: "loan.rejected", copy: copy("loan.rejected", { loan: l.loanNumber, reason: reasonText }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/my`, dedupeKey: `loan-rejected:${id}` });
   return { ok: true };
 }
 
@@ -814,7 +814,7 @@ export async function changeRate(ctx: OrgContext, id: ObjectId, input: z.infer<t
   );
   await recordCalc(ctx, l, "prepayment_reschedule", { method: l.interestMethod, annualRate: rate, principalPaise: balance, periodStart: input.effectiveFrom, periodEnd: rows[rows.length - 1].dueDate, interestPaise: rows.slice(idx).reduce((s, r) => s + r.interestDuePaise, 0), details: { reason: "rate_change", previousRate: l.annualRate } });
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "loan.rate_change", entityType: "loan", entityId: id, before: { annualRate: l.annualRate }, after: { annualRate: rate, effectiveFrom: input.effectiveFrom }, reason: input.reason });
-  await notifyMember(ctx.orgId, l.memberId, { type: "loan.rate_changed", copy: copy("loan.rate_changed", { loan: l.loanNumber, rate: String(rate), fromDate: input.effectiveFrom.toISOString() }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/my`, dedupeKey: `loan-rate:${id}:${now.getTime()}` });
+  await notifyMember(ctx.orgId, l.memberId, { actorId: ctx.user._id, type: "loan.rate_changed", copy: copy("loan.rate_changed", { loan: l.loanNumber, rate: String(rate), fromDate: input.effectiveFrom.toISOString() }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/my`, dedupeKey: `loan-rate:${id}:${now.getTime()}` });
   return getLoan(ctx, id);
 }
 

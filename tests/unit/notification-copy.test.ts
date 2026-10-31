@@ -7,7 +7,7 @@ const SAMPLE = {
   reason: "Amount doesn't match the cash book", days: 3, period: "Nov 2026", dueDate: "2026-11-05T00:00:00.000Z", lateDays: 7, change: "due_date",
   loan: "LN/2026-27/0003", sequence: 4, rate: "12", fromDate: "2026-12-01T00:00:00.000Z", number: "UPAD/2026-27/0002", fromMonth: "2026-12",
   interestPaise: 15_000, principalPaise: 100_000, periodMonth: "2026-10", balancePaise: 820_000, payee: "Shree Decorators", category: "Festival",
-  status: "active", netPaise: 1_250_000, savingsPaise: 1_200_000, mandalSharePaise: 80_000, upadOwedPaise: 30_000, upadPaise: 30_000,
+  status: "active", netPaise: 1_250_000, savingsPaise: 1_200_000, mandalSharePaise: 80_000, upadOwedPaise: 30_000, upadPaise: 30_000, availablePaise: 50_000, date: "2026-11-15T00:00:00.000Z", time: "18:30", place: "Patel Samaj Hall, Surat", events: "Navratri planning",
 };
 
 describe("notification copy", () => {
@@ -33,6 +33,8 @@ describe("notification copy", () => {
     const hi = renderCopy("hi", copy("interest.credited", SAMPLE, "INR"));
     expect(hi.body).toMatch(/अक्तूबर|अक्टूबर/); // October 2026
     expect(renderCopy("en", copy("payment.request", { ...SAMPLE, purpose: "other" }, "INR")).body).toBe("₹1,500.00 in cash for “Ganpati donation”. Verify it to issue a receipt.");
+    expect(renderCopy("en", copy("meeting.scheduled", SAMPLE, "INR"))).toEqual({ title: "Mandal meeting on 15 Nov 2026", body: "15 Nov 2026, 6:30 pm · Patel Samaj Hall, Surat\nAlso that day: Navratri planning" });
+    expect(renderCopy("en", copy("meeting.scheduled", { ...SAMPLE, events: "" }, "INR")).body).toBe("15 Nov 2026, 6:30 pm · Patel Samaj Hall, Surat");
     // optional parts drop out cleanly
     expect(renderCopy("en", copy("payment.rejected", { amountPaise: 50_000, reason: "" }, "INR")).body).toBe("Your payment of ₹500.00 couldn't be verified. Speak to your treasurer if this looks wrong.");
   });

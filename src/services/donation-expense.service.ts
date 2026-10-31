@@ -253,6 +253,7 @@ export async function submitExpense(ctx: OrgContext, input: z.infer<typeof Expen
     });
     if (out.status === "pending") {
       await notifyRoles(ctx.orgId, ["admin"], {
+        actorId: ctx.user._id,
         type: "expense.pending",
         copy: copy("expense.pending", { amountPaise: doc.amountPaise, payee: doc.payeeName, category: cat.name }, ctx.org.settings.currency),
         link: `/org/${ctx.orgId}/expenses?status=pending`,
@@ -313,7 +314,7 @@ async function approveInSession(ctx: OrgContext, id: ObjectId, session: import("
 export async function approveExpense(ctx: OrgContext, id: ObjectId) {
   const e = await withTransaction((s) => approveInSession(ctx, id, s));
   if (!e.submittedBy.equals(ctx.user._id)) {
-    await notify({ organizationId: ctx.orgId, userId: e.submittedBy, type: "expense.approved", copy: copy("expense.approved", { amountPaise: e.amountPaise, payee: e.payeeName }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/expenses`, dedupeKey: `expense-approved:${id}` });
+    await notify({ organizationId: ctx.orgId, userId: e.submittedBy, actorId: ctx.user._id, type: "expense.approved", copy: copy("expense.approved", { amountPaise: e.amountPaise, payee: e.payeeName }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/expenses`, dedupeKey: `expense-approved:${id}` });
   }
   return e;
 }
@@ -327,7 +328,7 @@ export async function rejectExpense(ctx: OrgContext, id: ObjectId, reasonText: s
   );
   if (!e) throw conflict("Only pending expenses can be rejected");
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "expense.reject", entityType: "expense", entityId: id, reason: reasonText });
-  await notify({ organizationId: ctx.orgId, userId: e.submittedBy, type: "expense.rejected", copy: copy("expense.rejected", { amountPaise: e.amountPaise, payee: e.payeeName, reason: reasonText }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/expenses`, dedupeKey: `expense-rejected:${id}` });
+  await notify({ organizationId: ctx.orgId, userId: e.submittedBy, actorId: ctx.user._id, type: "expense.rejected", copy: copy("expense.rejected", { amountPaise: e.amountPaise, payee: e.payeeName, reason: reasonText }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/expenses`, dedupeKey: `expense-rejected:${id}` });
   return e;
 }
 

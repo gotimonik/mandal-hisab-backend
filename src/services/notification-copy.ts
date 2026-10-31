@@ -48,6 +48,8 @@ interface F {
   month(k: string): string;
   /** payment method — "cash" / "રોકડ" / "नकद" */
   method(k: string): string;
+  /** time of day (key holds "HH:mm") — "6:30 pm" */
+  time(k: string): string;
 }
 
 function fmt(lang: Lang, p: CopyParams): F {
@@ -70,6 +72,12 @@ function fmt(lang: Lang, p: CopyParams): F {
       return new Intl.DateTimeFormat(LOCALE[lang], { month: "long", year: "numeric", timeZone: "UTC", numberingSystem: "latn" }).format(new Date(`${v}-01T00:00:00Z`));
     },
     method: (k) => METHOD[lang][String(raw(k) ?? "")] ?? String(raw(k) ?? ""),
+    time: (k) => {
+      const v = String(raw(k) ?? "");
+      const hm = /^(\d{2}):(\d{2})$/.exec(v);
+      if (!hm) return v;
+      return new Intl.DateTimeFormat(LOCALE[lang], { hour: "numeric", minute: "2-digit", hour12: true, timeZone: "UTC", numberingSystem: "latn" }).format(new Date(Date.UTC(2000, 0, 1, Number(hm[1]), Number(hm[2]))));
+    },
   };
 }
 
@@ -171,6 +179,11 @@ const COPY = {
     gu: (f) => ({ title: "તમને ઉપાડ મળ્યો", body: `${f.m("amountPaise")} ઉપાડ (${f.s("number")}). વ્યાજ: માસિક ${f.s("rate")}%, ${f.month("fromMonth")} થી.` }),
     hi: (f) => ({ title: "आपको उपाड़ मिला", body: `${f.m("amountPaise")} उपाड़ (${f.s("number")})। ब्याज: मासिक ${f.s("rate")}%, ${f.month("fromMonth")} से।` }),
   },
+  "fundLoan.announced": {
+    en: (f) => ({ title: "Upad given", body: `${f.s("member")} took ${f.m("amountPaise")} upad from the Mandal fund. Cash available now: ${f.m("availablePaise")}.` }),
+    gu: (f) => ({ title: "ઉપાડ આપ્યો", body: `${f.s("member")} એ મંડળના ફંડમાંથી ${f.m("amountPaise")} ઉપાડ લીધો. હવે ઉપલબ્ધ રોકડ: ${f.m("availablePaise")}.` }),
+    hi: (f) => ({ title: "उपाड़ दिया गया", body: `${f.s("member")} ने मंडल के फ़ंड से ${f.m("amountPaise")} उपाड़ लिया। अब उपलब्ध नकद: ${f.m("availablePaise")}।` }),
+  },
   "upadClaim.new": {
     en: (f) => ({ title: `${f.s("member")} paid upad`, body: `${[f.has("interestPaise") ? `${f.m("interestPaise")} interest` : "", f.has("principalPaise") ? `${f.m("principalPaise")} returned` : ""].filter(Boolean).join(" + ")} on ${f.s("loan")}, in ${f.method("method")}. Verify it to issue a receipt.` }),
     gu: (f) => ({ title: `${f.s("member")} એ ઉપાડની ચુકવણી કરી`, body: `${f.s("loan")} પર ${f.method("method")} માં ${[f.has("interestPaise") ? `${f.m("interestPaise")} વ્યાજ` : "", f.has("principalPaise") ? `${f.m("principalPaise")} પરત` : ""].filter(Boolean).join(" + ")}. ખાતરી કરીને રસીદ આપો.` }),
@@ -217,6 +230,18 @@ const COPY = {
   },
 
   /* ---- people */
+  /* ---- meet-ups */
+  "meeting.scheduled": {
+    en: (f) => ({ title: `Mandal meeting on ${f.d("date")}`, body: `${f.d("date")}, ${f.time("time")} · ${f.s("place")}${f.has("events") ? `\nAlso that day: ${f.s("events")}` : ""}` }),
+    gu: (f) => ({ title: `મંડળની મીટિંગ ${f.d("date")} ના રોજ`, body: `${f.d("date")}, ${f.time("time")} · ${f.s("place")}${f.has("events") ? `\nએ દિવસે સાથે: ${f.s("events")}` : ""}` }),
+    hi: (f) => ({ title: `मंडल की मीटिंग ${f.d("date")} को`, body: `${f.d("date")}, ${f.time("time")} · ${f.s("place")}${f.has("events") ? `\nउस दिन साथ में: ${f.s("events")}` : ""}` }),
+  },
+  "meeting.cancelled": {
+    en: (f) => ({ title: "Mandal meeting cancelled", body: `The meeting on ${f.d("date")} at ${f.time("time")} is cancelled${reason(f) ? `: ${reason(f)}` : ""}.` }),
+    gu: (f) => ({ title: "મંડળની મીટિંગ રદ", body: `${f.d("date")}, ${f.time("time")} ની મીટિંગ રદ થઈ છે${reason(f) ? `: ${reason(f)}` : ""}.` }),
+    hi: (f) => ({ title: "मंडल की मीटिंग रद्द", body: `${f.d("date")}, ${f.time("time")} की मीटिंग रद्द हो गई है${reason(f) ? `: ${reason(f)}` : ""}।` }),
+  },
+
   "membership.request": {
     en: (f) => ({ title: "New join request", body: `${f.s("name")} wants to join. Approve or decline in Users & joining.` }),
     gu: (f) => ({ title: "જોડાવાની નવી વિનંતી", body: `${f.s("name")} જોડાવા માંગે છે. વપરાશકર્તાઓ અને જોડાણમાં મંજૂર કે નામંજૂર કરો.` }),

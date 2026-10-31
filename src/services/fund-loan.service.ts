@@ -11,12 +11,12 @@ import type { OrgContext } from "@/lib/auth";
 import type { FundLoanDoc, FundLoanDueDoc, FundLoanPaymentDoc, OrganizationDoc } from "@/types/models";
 import { dateOnly, idempotencyKey, money, optText, rateString } from "@/validators/common";
 import { FUND_LOANS, INCOME_KEYS, MEMBER_FUNDS, faKey, fyNumber, postTransaction, reverseTransaction } from "./ledger.service";
-import { balanceOf, requireAccount } from "./account.service";
+import { availableCashPaise, balanceOf, requireAccount } from "./account.service";
 import { postMemberEntry } from "./member-ledger.service";
 import { rateInterest } from "./member-interest.service";
 import { lastOfMonth, monthOf } from "./monthly.service";
 import { cancelReceiptFor, issueReceipt } from "./receipt.service";
-import { notifyMember } from "./notification.service";
+import { notifyMember, notifyOrgMembers } from "./notification.service";
 import { copy } from "./notification-copy";
 
 /**
@@ -201,11 +201,24 @@ export async function giveFundLoan(ctx: OrgContext, input: z.infer<typeof GiveLo
     });
     await refreshLoanDues(ctx.org, loan);
     await notifyMember(ctx.orgId, loan.memberId, {
+      actorId: ctx.user._id,
       type: "fundLoan.given",
       copy: copy("fundLoan.given", { amountPaise: loan.principalPaise, number: loan.number, rate: loan.monthlyRate, fromMonth: loan.firstInterestMonth }, ctx.org.settings.currency),
       link: `/org/${ctx.orgId}/my`,
       dedupeKey: `fl:${loan._id}`,
     });
+    // everyone else in the Mandal hears about it too — it's their money (the borrower got the message above)
+    await notifyOrgMembers(
+      ctx.orgId,
+      {
+        actorId: ctx.user._id,
+        type: "fundLoan.announced",
+        copy: copy("fundLoan.announced", { member: member.name, amountPaise: loan.principalPaise, availablePaise: await availableCashPaise(ctx.orgId) }, ctx.org.settings.currency),
+        link: `/org/${ctx.orgId}`,
+        dedupeKey: `fl-ann:${loan._id}`,
+      },
+      { exceptUserIds: [member.userId, ctx.user._id] },
+    );
     return { loan, duplicate: false };
   } catch (e) {
     if (isDuplicateKeyError(e)) {

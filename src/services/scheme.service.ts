@@ -443,6 +443,7 @@ export async function enrollMembers(ctx: OrgContext, schemeId: ObjectId, input: 
     enrolled++;
     installments += await generateForEnrollment(ctx.org, s, enrollment, horizon, ctx.user._id);
     await notifyMember(ctx.orgId, memberId, {
+      actorId: ctx.user._id,
       type: "scheme.assigned",
       copy: copy("scheme.assigned", { scheme: s.name, amountPaise: s.amountPaise }, ctx.org.settings.currency),
       link: `/org/${ctx.orgId}/my`,
@@ -858,6 +859,7 @@ export async function installmentAction(ctx: OrgContext, id: ObjectId, input: z.
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: `installment.${input.action}`, entityType: "installment", entityId: id, before: { dueDate: i.dueDate, amountPaise: i.amountPaise, state: i.state }, after: $set, reason: input.reason });
   if (input.action === "set_due_date" || input.action === "set_amount") {
     await notifyMember(ctx.orgId, i.memberId, {
+      actorId: ctx.user._id,
       type: "installment.changed",
       copy: copy("installment.changed", { scheme: (await c.haptaSchemes.findOne({ _id: i.schemeId }, { projection: { name: 1 } }))?.name ?? "", period: i.periodLabel, change: input.action === "set_due_date" ? "due_date" : "amount", reason: input.reason }, ctx.org.settings.currency),
       link: `/org/${ctx.orgId}/my`,
