@@ -59,16 +59,7 @@ export interface PushMessage {
   body: string;
   data: Record<string, string>;
   badge?: number;
-  /** iOS: break through Focus and stay on the lock screen ("Time Sensitive"). */
-  timeSensitive?: boolean;
 }
-
-/**
- * Notifications about something happening at a set time, which people must not miss.
- * On iOS these are Time Sensitive (the app has the time-sensitive entitlement).
- */
-const TIME_SENSITIVE = new Set(["meeting.scheduled", "meeting.cancelled"]);
-export const isTimeSensitive = (type: string) => TIME_SENSITIVE.has(type);
 type SendResult = "ok" | "invalid-token" | "error";
 type Transport = (m: PushMessage) => Promise<SendResult>;
 
@@ -119,7 +110,7 @@ export async function sendNotificationPush(notificationId: ObjectId) {
     // one phone failing (network, Apple credentials …) never stops the others
     let r: SendResult;
     try {
-      r = await send({ token: d.token, title, body: words.body, badge, timeSensitive: isTimeSensitive(n.type), data: { link: n.link ?? "", notificationId: n._id.toHexString(), organizationId: n.organizationId.toHexString() } });
+      r = await send({ token: d.token, title, body: words.body, badge, data: { link: n.link ?? "", notificationId: n._id.toHexString(), organizationId: n.organizationId.toHexString() } });
     } catch (e) {
       console.error("[push] send failed", d.platform, (e as Error).message);
       r = "error";
@@ -164,10 +155,11 @@ export function fcmMessage(m: PushMessage) {
       notification: { title: m.title, body: m.body },
       data: m.data,
       android: { priority: "high", notification: { channel_id: "default", sound: "default", ...(m.badge !== undefined ? { notification_count: m.badge } : {}) } },
+      // every push is Time Sensitive on iOS: it breaks through Focus and stays on the lock screen
+      // (needs the time-sensitive entitlement in the iOS app), delivered right away (priority 10)
       apns: {
-        // time-sensitive pushes must be delivered right away (priority 10)
-        ...(m.timeSensitive ? { headers: { "apns-priority": "10" } } : {}),
-        payload: { aps: { sound: "default", ...(m.badge !== undefined ? { badge: m.badge } : {}), ...(m.timeSensitive ? { "interruption-level": "time-sensitive" } : {}) } },
+        headers: { "apns-priority": "10" },
+        payload: { aps: { sound: "default", "interruption-level": "time-sensitive", ...(m.badge !== undefined ? { badge: m.badge } : {}) } },
       },
     },
   };

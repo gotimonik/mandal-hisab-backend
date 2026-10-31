@@ -131,7 +131,7 @@ describe("phone push notifications", () => {
     expect(await c.notifications.countDocuments({ organizationId: new ObjectId(own.id as string), type: "platform.orgPending" })).toBe(0);
   });
 
-  it("meeting pushes are Time Sensitive on iOS; everyday ones aren't", async () => {
+  it("every push is Time Sensitive on iOS", async () => {
     const o = await setupOrg();
     const u = await addUser(o.orgId, o.code, o.admin.token, "member");
     const phone = token();
@@ -141,13 +141,11 @@ describe("phone push notifications", () => {
     await ok(api("POST", `/orgs/${o.orgId}/meetings`, { token: o.admin.token, body: { date, time: "18:30", idempotencyKey: uniq("mt") } }));
     await wait(300);
     const push = sentPushes.find((p) => p.token === phone && p.body.includes("Pramukh Chhaya"))!;
-    expect(push.timeSensitive).toBe(true);
-    const aps = fcmMessage(push).message.apns;
-    expect(aps.payload.aps).toMatchObject({ "interruption-level": "time-sensitive", sound: "default" });
-    expect(aps.headers).toEqual({ "apns-priority": "10" });
-    // an ordinary push has no interruption level
-    const plain = fcmMessage({ token: phone, title: "Payment verified", body: "₹500", data: {} }).message.apns;
-    expect(plain.payload.aps).not.toHaveProperty("interruption-level");
-    expect(plain).not.toHaveProperty("headers");
+    for (const m of [push, { token: phone, title: "Payment verified", body: "₹500", data: {} }]) {
+      const apns = fcmMessage(m).message.apns;
+      expect(apns.payload.aps).toMatchObject({ "interruption-level": "time-sensitive", sound: "default" });
+      expect(apns.headers).toEqual({ "apns-priority": "10" });
+    }
   });
+
 });
