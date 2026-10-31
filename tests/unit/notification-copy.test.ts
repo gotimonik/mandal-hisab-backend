@@ -33,8 +33,15 @@ describe("notification copy", () => {
     const hi = renderCopy("hi", copy("interest.credited", SAMPLE, "INR"));
     expect(hi.body).toMatch(/अक्तूबर|अक्टूबर/); // October 2026
     expect(renderCopy("en", copy("payment.request", { ...SAMPLE, purpose: "other" }, "INR")).body).toBe("₹1,500.00 in cash for “Ganpati donation”. Verify it to issue a receipt.");
-    expect(renderCopy("en", copy("meeting.scheduled", SAMPLE, "INR"))).toEqual({ title: "Mandal meeting on 15 Nov 2026", body: "15 Nov 2026, 6:30 pm · Patel Samaj Hall, Surat\nAlso that day: Navratri planning" });
-    expect(renderCopy("en", copy("meeting.scheduled", { ...SAMPLE, events: "" }, "INR")).body).toBe("15 Nov 2026, 6:30 pm · Patel Samaj Hall, Surat");
+    // meetings read like the message an admin would write
+    const pramukh = { date: "2026-10-23T00:00:00.000Z", time: "18:30", place: "પ્રમુખ છાયા", when: "tomorrow" };
+    expect(renderCopy("gu", copy("meeting.scheduled", pramukh, "INR"))).toEqual({ title: "મંડળની મીટિંગ · તા. 23/10/2026", body: "કાલે સાંજે 6:30 વાગ્યે, તા. 23/10/2026 ના રોજ પ્રમુખ છાયા માં મંડળ રાખેલ છે." });
+    expect(renderCopy("hi", copy("meeting.scheduled", { ...pramukh, place: "प्रमुख छाया" }, "INR")).body).toBe("कल शाम 6:30 बजे, दिनांक 23/10/2026 को प्रमुख छाया में मंडल की मीटिंग रखी गई है।");
+    expect(renderCopy("en", copy("meeting.scheduled", { ...pramukh, place: "Pramukh Chhaya" }, "INR")).body).toBe("The Mandal meets tomorrow evening, 6:30 pm (23/10/2026), at Pramukh Chhaya.");
+    // further away → the weekday; morning / night; other events that day on a new line
+    expect(renderCopy("gu", copy("meeting.scheduled", { ...SAMPLE, time: "09:00" }, "INR")).body).toBe("રવિવારે સવારે 9:00 વાગ્યે, તા. 15/11/2026 ના રોજ Patel Samaj Hall, Surat માં મંડળ રાખેલ છે.\nએ દિવસે સાથે: Navratri planning");
+    expect(renderCopy("en", copy("meeting.scheduled", { ...pramukh, place: "Hall", time: "21:00", when: "today" }, "INR")).body).toBe("The Mandal meets tonight, 9:00 pm (23/10/2026), at Hall.");
+    expect(renderCopy("gu", copy("meeting.cancelled", { ...pramukh, reason: "હોલ મળ્યો નથી" }, "INR")).body).toBe("કાલે સાંજે 6:30 વાગ્યે, તા. 23/10/2026 ના રોજ પ્રમુખ છાયા માં રાખેલ મંડળ રદ કરેલ છે: હોલ મળ્યો નથી.");
     // optional parts drop out cleanly
     expect(renderCopy("en", copy("payment.rejected", { amountPaise: 50_000, reason: "" }, "INR")).body).toBe("Your payment of ₹500.00 couldn't be verified. Speak to your treasurer if this looks wrong.");
   });

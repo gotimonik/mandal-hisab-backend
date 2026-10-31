@@ -42,8 +42,8 @@ describe("Mandal meetings", () => {
     const { meeting } = await ok(create(admin.token, { date, time: "18:30", events: "Navratri planning and dinner" }));
     expect(meeting).toMatchObject({ place: "Patel Samaj Hall, Ring Road, Surat", time: "18:30", status: "scheduled" });
     const [n] = (await types(member.token)).filter((x) => x.type === "meeting.scheduled");
-    expect(n.title).toMatch(/^Mandal meeting on /);
-    expect(n.body).toContain("6:30 pm · Patel Samaj Hall, Ring Road, Surat");
+    expect(n.title).toMatch(/^Mandal meeting · \d{2}\/\d{2}\/\d{4}$/);
+    expect(n.body).toMatch(/^The Mandal meets on \w+day evening, 6:30 pm \(\d{2}\/\d{2}\/\d{4}\), at Patel Samaj Hall, Ring Road, Surat\./);
     expect(n.body).toContain("Also that day: Navratri planning and dinner");
     expect(n.link).toBe(`/org/${orgId}/meetings`);
     // the admin who called it isn't notified of their own meeting
@@ -73,5 +73,12 @@ describe("Mandal meetings", () => {
     expect((await api("POST", `/orgs/${orgId}/meetings/${meeting._id}/cancel`, { token: admin.token, body: {} })).status).toBe(409);
     const [n] = (await types(member.token)).filter((x) => x.type === "meeting.cancelled");
     expect(n.body).toMatch(/is cancelled: Hall not available\.$/);
+  });
+
+  it("a meeting tomorrow says 'tomorrow' — in the member's language", async () => {
+    await ok(api("PATCH", "/auth/me", { token: member.token, body: { language: "gu" } }));
+    await ok(create(admin.token, { date: future(1), time: "18:30", place: "પ્રમુખ છાયા" }));
+    const [n] = (await types(member.token)).filter((x) => x.type === "meeting.scheduled");
+    expect(n.body).toMatch(/^કાલે સાંજે 6:30 વાગ્યે, તા\. \d{2}\/\d{2}\/\d{4} ના રોજ પ્રમુખ છાયા માં મંડળ રાખેલ છે\.$/);
   });
 });

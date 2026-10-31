@@ -59,7 +59,16 @@ export interface PushMessage {
   body: string;
   data: Record<string, string>;
   badge?: number;
+  /** iOS: break through Focus and stay on the lock screen ("Time Sensitive"). */
+  timeSensitive?: boolean;
 }
+
+/**
+ * Notifications about something happening at a set time, which people must not miss.
+ * On iOS these are Time Sensitive (the app has the time-sensitive entitlement).
+ */
+const TIME_SENSITIVE = new Set(["meeting.scheduled", "meeting.cancelled"]);
+export const isTimeSensitive = (type: string) => TIME_SENSITIVE.has(type);
 type SendResult = "ok" | "invalid-token" | "error";
 type Transport = (m: PushMessage) => Promise<SendResult>;
 
@@ -110,7 +119,7 @@ export async function sendNotificationPush(notificationId: ObjectId) {
     // one phone failing (network, Apple credentials …) never stops the others
     let r: SendResult;
     try {
-      r = await send({ token: d.token, title, body: words.body, badge, data: { link: n.link ?? "", notificationId: n._id.toHexString(), organizationId: n.organizationId.toHexString() } });
+      r = await send({ token: d.token, title, body: words.body, badge, timeSensitive: isTimeSensitive(n.type), data: { link: n.link ?? "", notificationId: n._id.toHexString(), organizationId: n.organizationId.toHexString() } });
     } catch (e) {
       console.error("[push] send failed", d.platform, (e as Error).message);
       r = "error";
@@ -133,15 +142,7 @@ async function send(m: PushMessage): Promise<SendResult> {
   const res = await fetch(`https://fcm.googleapis.com/v1/projects/${account.project_id}/messages:send`, {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: JSON.stringify({
-      message: {
-        token: m.token,
-        notification: { title: m.title, body: m.body },
-        data: m.data,
-        android: { priority: "high", notification: { channel_id: "default", sound: "default", ...(m.badge !== undefined ? { notification_count: m.badge } : {}) } },
-        apns: { payload: { aps: { sound: "default", ...(m.badge !== undefined ? { badge: m.badge } : {}) } } },
-      },
-    }),
+    body: JSON.stringify(fcmMessage(m)),
   });
   if (res.ok) return "ok";
   const text = await res.text().catch(() => "");
@@ -153,6 +154,23 @@ async function send(m: PushMessage): Promise<SendResult> {
   }
   console.error("[push] FCM", res.status, text.slice(0, 300));
   return "error";
+}
+
+/** The FCM HTTP v1 request body for one phone. */
+export function fcmMessage(m: PushMessage) {
+  return {
+    message: {
+      token: m.token,
+      notification: { title: m.title, body: m.body },
+      data: m.data,
+      android: { priority: "high", notification: { channel_id: "default", sound: "default", ...(m.badge !== undefined ? { notification_count: m.badge } : {}) } },
+      apns: {
+        // time-sensitive pushes must be delivered right away (priority 10)
+        ...(m.timeSensitive ? { headers: { "apns-priority": "10" } } : {}),
+        payload: { aps: { sound: "default", ...(m.badge !== undefined ? { badge: m.badge } : {}), ...(m.timeSensitive ? { "interruption-level": "time-sensitive" } : {}) } },
+      },
+    },
+  };
 }
 
 /** FCM's reason for a failed send, from the HTTP v1 error body. */

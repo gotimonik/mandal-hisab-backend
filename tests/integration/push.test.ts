@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ObjectId } from "mongodb";
 import { addUser, api, makePlatformAdmin, ok, registerAndLogin, setupOrg, uniq } from "../helpers/api";
 import { cols } from "@/lib/collections";
-import { sendNotificationPush, sentPushes, setPushTransport } from "@/services/push.service";
+import { fcmMessage, sendNotificationPush, sentPushes, setPushTransport } from "@/services/push.service";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const token = () => `fcm-${uniq()}-${"x".repeat(30)}`;
@@ -129,5 +129,25 @@ describe("phone push notifications", () => {
     const own = await ok(api("POST", "/organizations", { token: pa.token, body: { name: `Own ${uniq()}` } }));
     expect(own.status).toBe("active");
     expect(await c.notifications.countDocuments({ organizationId: new ObjectId(own.id as string), type: "platform.orgPending" })).toBe(0);
+  });
+
+  it("meeting pushes are Time Sensitive on iOS; everyday ones aren't", async () => {
+    const o = await setupOrg();
+    const u = await addUser(o.orgId, o.code, o.admin.token, "member");
+    const phone = token();
+    await ok(api("POST", "/me/push-devices", { token: u.token, body: { token: phone, platform: "ios" } }));
+    await ok(api("PATCH", `/orgs/${o.orgId}`, { token: o.admin.token, body: { address: "Pramukh Chhaya" } }));
+    const date = new Date(Date.now() + 2 * 86_400_000).toISOString().slice(0, 10);
+    await ok(api("POST", `/orgs/${o.orgId}/meetings`, { token: o.admin.token, body: { date, time: "18:30", idempotencyKey: uniq("mt") } }));
+    await wait(300);
+    const push = sentPushes.find((p) => p.token === phone && p.body.includes("Pramukh Chhaya"))!;
+    expect(push.timeSensitive).toBe(true);
+    const aps = fcmMessage(push).message.apns;
+    expect(aps.payload.aps).toMatchObject({ "interruption-level": "time-sensitive", sound: "default" });
+    expect(aps.headers).toEqual({ "apns-priority": "10" });
+    // an ordinary push has no interruption level
+    const plain = fcmMessage({ token: phone, title: "Payment verified", body: "₹500", data: {} }).message.apns;
+    expect(plain.payload.aps).not.toHaveProperty("interruption-level");
+    expect(plain).not.toHaveProperty("headers");
   });
 });

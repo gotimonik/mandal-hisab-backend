@@ -3,7 +3,7 @@ import { z } from "zod";
 import { cols } from "@/lib/collections";
 import { audit } from "@/lib/audit";
 import { badRequest, conflict, isDuplicateKeyError, notFound } from "@/lib/errors";
-import { todayIn } from "@/lib/dates";
+import { diffDays, todayIn } from "@/lib/dates";
 import type { OrgContext } from "@/lib/auth";
 import type { MeetingDoc, OrganizationDoc } from "@/types/models";
 import { dateOnly, idempotencyKey, optText } from "@/validators/common";
@@ -33,7 +33,11 @@ export const MeetingSchema = z.object({
   idempotencyKey,
 });
 
-const toCopy = (m: Pick<MeetingDoc, "date" | "time" | "place" | "events">) => ({ date: m.date.toISOString(), time: m.time, place: m.place, events: m.events ?? "" });
+/** What the notification says. `when` is "today" / "tomorrow" relative to the moment it's sent (else the weekday is used). */
+function toCopy(m: Pick<MeetingDoc, "date" | "time" | "place" | "events">, today: Date) {
+  const days = diffDays(m.date, today);
+  return { date: m.date.toISOString(), time: m.time, place: m.place, events: m.events ?? "", when: days === 0 ? "today" : days === 1 ? "tomorrow" : "" };
+}
 
 export async function listMeetings(ctx: OrgContext) {
   const c = await cols();
@@ -55,7 +59,8 @@ export async function createMeeting(ctx: OrgContext, input: z.infer<typeof Meeti
   const c = await cols();
   const prior = await c.meetings.findOne({ organizationId: ctx.orgId, idempotencyKey: input.idempotencyKey });
   if (prior) return { meeting: prior, duplicate: true };
-  if (input.date < todayIn(ctx.org.settings.timezone)) throw badRequest("The meeting date can't be in the past");
+  const today = todayIn(ctx.org.settings.timezone);
+  if (input.date < today) throw badRequest("The meeting date can't be in the past");
   const place = input.place || defaultPlace(ctx.org);
   if (!place) throw badRequest("Enter where the meeting is — or add the Mandal's address in Settings");
   const now = new Date();
@@ -81,13 +86,13 @@ export async function createMeeting(ctx: OrgContext, input: z.infer<typeof Meeti
     }
     throw e;
   }
-  await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "meeting.create", entityType: "meeting", entityId: doc._id, after: toCopy(doc) });
+  await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "meeting.create", entityType: "meeting", entityId: doc._id, after: { date: doc.date, time: doc.time, place: doc.place, events: doc.events } });
   await notifyOrgMembers(
     ctx.orgId,
     {
       actorId: ctx.user._id,
       type: "meeting.scheduled",
-      copy: copy("meeting.scheduled", toCopy(doc), ctx.org.settings.currency),
+      copy: copy("meeting.scheduled", toCopy(doc, today), ctx.org.settings.currency),
       link: `/org/${ctx.orgId}/meetings`,
       dedupeKey: `meeting:${doc._id}`,
     },
@@ -101,7 +106,8 @@ export async function cancelMeeting(ctx: OrgContext, id: ObjectId, reasonText?: 
   const m = await c.meetings.findOne({ _id: id, organizationId: ctx.orgId });
   if (!m) throw notFound("Meeting");
   if (m.status === "cancelled") throw conflict("This meeting is already cancelled");
-  if (m.date < todayIn(ctx.org.settings.timezone)) throw badRequest("This meeting has already happened");
+  const today = todayIn(ctx.org.settings.timezone);
+  if (m.date < today) throw badRequest("This meeting has already happened");
   const r = await c.meetings.updateOne({ _id: id, status: "scheduled" }, { $set: { status: "cancelled", cancelReason: reasonText || undefined, cancelledAt: new Date(), updatedAt: new Date() } });
   if (r.modifiedCount !== 1) throw conflict("This meeting was just changed — refresh and try again");
   await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "meeting.cancel", entityType: "meeting", entityId: id, reason: reasonText });
@@ -110,7 +116,7 @@ export async function cancelMeeting(ctx: OrgContext, id: ObjectId, reasonText?: 
     {
       actorId: ctx.user._id,
       type: "meeting.cancelled",
-      copy: copy("meeting.cancelled", { ...toCopy(m), reason: reasonText ?? "" }, ctx.org.settings.currency),
+      copy: copy("meeting.cancelled", { ...toCopy(m, today), reason: reasonText ?? "" }, ctx.org.settings.currency),
       link: `/org/${ctx.orgId}/meetings`,
       dedupeKey: `meeting-cancel:${id}`,
     },

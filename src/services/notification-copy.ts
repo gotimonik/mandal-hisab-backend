@@ -94,6 +94,52 @@ const inDays = (f: F, en: [string, string, string], gu: [string, string, string]
 const schemePeriod = (f: F) => [f.s("scheme"), f.s("period")].filter(Boolean).join(" · ");
 const reason = (f: F) => (f.has("reason") ? f.s("reason") : "");
 
+/* ---- meet-ups: when, the way people say it — "કાલે સાંજે 6:30 વાગ્યે, તા. 23/10/2026" */
+const DAY_WORD: Record<Lang, { today: string; tomorrow: string }> = {
+  en: { today: "today", tomorrow: "tomorrow" },
+  gu: { today: "આજે", tomorrow: "કાલે" },
+  hi: { today: "आज", tomorrow: "कल" },
+};
+const WEEKDAY: Record<Lang, string[]> = {
+  en: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"],
+  gu: ["રવિવારે", "સોમવારે", "મંગળવારે", "બુધવારે", "ગુરુવારે", "શુક્રવારે", "શનિવારે"],
+  hi: ["रविवार", "सोमवार", "मंगलवार", "बुधवार", "गुरुवार", "शुक्रवार", "शनिवार"],
+};
+/** morning, afternoon, evening, night */
+const DAY_PART: Record<Lang, [string, string, string, string]> = {
+  en: ["morning", "afternoon", "evening", "night"],
+  gu: ["સવારે", "બપોરે", "સાંજે", "રાત્રે"],
+  hi: ["सुबह", "दोपहर", "शाम", "रात"],
+};
+const dayPart = (hour: number) => (hour >= 4 && hour < 12 ? 0 : hour >= 12 && hour < 16 ? 1 : hour >= 16 && hour < 20 ? 2 : 3);
+
+/** The meeting date as people write it: "23/10/2026". */
+function meetingDmy(f: F) {
+  const d = new Date(f.s("date"));
+  return `${String(d.getUTCDate()).padStart(2, "0")}/${String(d.getUTCMonth() + 1).padStart(2, "0")}/${d.getUTCFullYear()}`;
+}
+
+/**
+ * "કાલે સાંજે 6:30 વાગ્યે, તા. 23/10/2026" / "कल शाम 6:30 बजे, दिनांक 23/10/2026" /
+ * "tomorrow evening, 6:30 pm (23/10/2026)". `when` (today | tomorrow) is worked out when the
+ * notification is sent, like a message someone writes; otherwise the weekday is used.
+ */
+function meetingWhen(f: F): string {
+  const d = new Date(f.s("date"));
+  const dmy = meetingDmy(f);
+  const [h, m] = f.s("time").split(":").map(Number);
+  const part = DAY_PART[f.lang][dayPart(h)];
+  const rel = f.s("when");
+  const clock = `${h % 12 || 12}:${String(m).padStart(2, "0")}`;
+  if (f.lang === "en") {
+    const day = rel === "today" ? (dayPart(h) === 3 ? "tonight" : `this ${part}`) : rel === "tomorrow" ? `tomorrow ${part}` : `on ${WEEKDAY.en[d.getUTCDay()]} ${part}`;
+    return `${day}, ${f.time("time")} (${dmy})`;
+  }
+  const day = rel === "today" || rel === "tomorrow" ? DAY_WORD[f.lang][rel] : WEEKDAY[f.lang][d.getUTCDay()];
+  return f.lang === "gu" ? `${day} ${part} ${clock} વાગ્યે, તા. ${dmy}` : `${day} ${part} ${clock} बजे, दिनांक ${dmy}`;
+}
+const alsoThatDay = (f: F, label: string) => (f.has("events") ? `\n${label}: ${f.s("events")}` : "");
+
 /* ------------------------------------------------------------------ the copy */
 
 const COPY = {
@@ -232,14 +278,14 @@ const COPY = {
   /* ---- people */
   /* ---- meet-ups */
   "meeting.scheduled": {
-    en: (f) => ({ title: `Mandal meeting on ${f.d("date")}`, body: `${f.d("date")}, ${f.time("time")} · ${f.s("place")}${f.has("events") ? `\nAlso that day: ${f.s("events")}` : ""}` }),
-    gu: (f) => ({ title: `મંડળની મીટિંગ ${f.d("date")} ના રોજ`, body: `${f.d("date")}, ${f.time("time")} · ${f.s("place")}${f.has("events") ? `\nએ દિવસે સાથે: ${f.s("events")}` : ""}` }),
-    hi: (f) => ({ title: `मंडल की मीटिंग ${f.d("date")} को`, body: `${f.d("date")}, ${f.time("time")} · ${f.s("place")}${f.has("events") ? `\nउस दिन साथ में: ${f.s("events")}` : ""}` }),
+    en: (f) => ({ title: `Mandal meeting · ${meetingDmy(f)}`, body: `The Mandal meets ${meetingWhen(f)}, at ${f.s("place")}.${alsoThatDay(f, "Also that day")}` }),
+    gu: (f) => ({ title: `મંડળની મીટિંગ · તા. ${meetingDmy(f)}`, body: `${meetingWhen(f)} ના રોજ ${f.s("place")} માં મંડળ રાખેલ છે.${alsoThatDay(f, "એ દિવસે સાથે")}` }),
+    hi: (f) => ({ title: `मंडल की मीटिंग · दिनांक ${meetingDmy(f)}`, body: `${meetingWhen(f)} को ${f.s("place")} में मंडल की मीटिंग रखी गई है।${alsoThatDay(f, "उस दिन साथ में")}` }),
   },
   "meeting.cancelled": {
-    en: (f) => ({ title: "Mandal meeting cancelled", body: `The meeting on ${f.d("date")} at ${f.time("time")} is cancelled${reason(f) ? `: ${reason(f)}` : ""}.` }),
-    gu: (f) => ({ title: "મંડળની મીટિંગ રદ", body: `${f.d("date")}, ${f.time("time")} ની મીટિંગ રદ થઈ છે${reason(f) ? `: ${reason(f)}` : ""}.` }),
-    hi: (f) => ({ title: "मंडल की मीटिंग रद्द", body: `${f.d("date")}, ${f.time("time")} की मीटिंग रद्द हो गई है${reason(f) ? `: ${reason(f)}` : ""}।` }),
+    en: (f) => ({ title: "Mandal meeting cancelled", body: `The Mandal meeting ${meetingWhen(f)}, at ${f.s("place")}, is cancelled${reason(f) ? `: ${reason(f)}` : ""}.` }),
+    gu: (f) => ({ title: "મંડળ રદ કરેલ છે", body: `${meetingWhen(f)} ના રોજ ${f.s("place")} માં રાખેલ મંડળ રદ કરેલ છે${reason(f) ? `: ${reason(f)}` : ""}.` }),
+    hi: (f) => ({ title: "मंडल की मीटिंग रद्द", body: `${meetingWhen(f)} को ${f.s("place")} में रखी गई मंडल की मीटिंग रद्द कर दी गई है${reason(f) ? `: ${reason(f)}` : ""}।` }),
   },
 
   "membership.request": {
