@@ -12,7 +12,8 @@ const addMonths = (m: string, n: number) => {
   const [y, mo] = m.split("-").map(Number);
   return new Date(Date.UTC(y, mo - 1 + n, 1)).toISOString().slice(0, 7);
 };
-const START = addMonths(nowMonth(), -1);
+// Two months back: last month's hapta (due on the 10th) is overdue on any day of this month.
+const START = addMonths(nowMonth(), -2);
 const THIS = nowMonth();
 
 async function createMandal(name: string, extra: Record<string, unknown> = {}) {
@@ -67,7 +68,7 @@ describe("closing and settling a Mandal", () => {
   it("lists what must be finished first and won't start until it is", async () => {
     const p = await preview();
     const keys = p.blockers.map((b: any) => b.key);
-    expect(keys).toContain("hapta"); // this month is unpaid
+    expect(keys).toContain("hapta"); // last month is unpaid
     expect(keys).toContain("upadInterest");
     expect(p.canStart).toBe(false);
     expect((await api("POST", `/orgs/${o.orgId}/settlement/start`, { token: o.token, body: {} })).status).toBe(400);

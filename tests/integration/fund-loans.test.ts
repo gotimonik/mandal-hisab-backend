@@ -21,6 +21,8 @@ async function createMandal(name: string, hapta: string, startMonth: string) {
 type Mandal = Awaited<ReturnType<typeof createMandal>>;
 
 const JUL = "2026-07";
+/** Today in India — payments are dated today so the tests hold whatever month they run in. */
+const today = () => new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);
 const balance = async (o: Mandal, memberId: string) => (await ok(api("GET", `/orgs/${o.orgId}/members/${memberId}/ledger`, { token: o.admin.token }))).currentBalancePaise as number;
 const dash = (o: Mandal) => ok(api("GET", `/orgs/${o.orgId}/dashboard`, { token: o.admin.token }));
 const pay = (o: Mandal, loanId: string, body: Record<string, unknown>) => api("POST", `/orgs/${o.orgId}/fund-loans/${loanId}/payments`, { token: o.admin.token, body: { idempotencyKey: uniq("flp"), ...body } });
@@ -323,7 +325,7 @@ describe("'I have paid' with a purpose", () => {
   it("member reports upad interest + part returned; admin verifies → receipt with the member's method", async () => {
     const opts = await ok(api("GET", `/orgs/${o.orgId}/me/payment-options`, { token: mem.token }));
     const due = opts.upads[0].interestDuePaise as number;
-    const claim = (body: Record<string, unknown>) => api("POST", `/orgs/${o.orgId}/me/upad-payments`, { token: mem.token, body: { loanId, date: "2026-10-20", method: "cash", idempotencyKey: uniq("uc"), ...body } });
+    const claim = (body: Record<string, unknown>) => api("POST", `/orgs/${o.orgId}/me/upad-payments`, { token: mem.token, body: { loanId, date: today(), method: "cash", idempotencyKey: uniq("uc"), ...body } });
     expect((await claim({ interestAmount: String(due / 100 + 1) })).status).toBe(400); // more than due
     expect((await claim({ principalAmount: "1001" })).status).toBe(400); // more than outstanding
     const c1 = await ok(claim({ interestAmount: String(due / 100), principalAmount: "200", reference: "UPI123" }));
@@ -349,7 +351,7 @@ describe("'I have paid' with a purpose", () => {
   });
 
   it("admin can reject a reported upad payment with a reason", async () => {
-    const c2 = await ok(api("POST", `/orgs/${o.orgId}/me/upad-payments`, { token: mem.token, body: { loanId, principalAmount: "100", date: "2026-10-21", method: "cash", idempotencyKey: uniq("uc") } }));
+    const c2 = await ok(api("POST", `/orgs/${o.orgId}/me/upad-payments`, { token: mem.token, body: { loanId, principalAmount: "100", date: today(), method: "cash", idempotencyKey: uniq("uc") } }));
     await ok(api("POST", `/orgs/${o.orgId}/upad-payments/${c2.claim._id}/reject`, { token: o.admin.token, body: { reason: "Not received yet" } }));
     const mine = await ok<any[]>(api("GET", `/orgs/${o.orgId}/me/upad-payments`, { token: mem.token }));
     expect(mine[0]).toMatchObject({ status: "rejected", rejectedReason: "Not received yet" });
@@ -357,8 +359,8 @@ describe("'I have paid' with a purpose", () => {
   });
 
   it("if the admin records the reported money with Receive, the member's claim closes itself", async () => {
-    const c3 = await ok(api("POST", `/orgs/${o.orgId}/me/upad-payments`, { token: mem.token, body: { loanId, principalAmount: "100", date: "2026-10-22", method: "cash", idempotencyKey: uniq("uc") } }));
-    const r = await ok(pay(o, loanId, { principalAmount: "100", date: "2026-10-22" }));
+    const c3 = await ok(api("POST", `/orgs/${o.orgId}/me/upad-payments`, { token: mem.token, body: { loanId, principalAmount: "100", date: today(), method: "cash", idempotencyKey: uniq("uc") } }));
+    const r = await ok(pay(o, loanId, { principalAmount: "100", date: today() }));
     expect(r.settledClaimId).toBe(c3.claim._id);
     expect(await ok<any[]>(api("GET", `/orgs/${o.orgId}/upad-payments`, { token: o.admin.token }))).toHaveLength(0);
     expect((await ok(api("GET", `/orgs/${o.orgId}/fund-loans/${loanId}`, { token: o.admin.token }))).loan.outstandingPaise).toBe(70_000); // counted once
@@ -367,8 +369,8 @@ describe("'I have paid' with a purpose", () => {
   });
 
   it("a claim already covered by a different Receive is flagged; Verify refuses, 'Already recorded' closes it", async () => {
-    const c4 = await ok(api("POST", `/orgs/${o.orgId}/me/upad-payments`, { token: mem.token, body: { loanId, principalAmount: "50", date: "2026-10-23", method: "cash", idempotencyKey: uniq("uc") } }));
-    const r = await ok(pay(o, loanId, { principalAmount: "60", date: "2026-10-23" }));
+    const c4 = await ok(api("POST", `/orgs/${o.orgId}/me/upad-payments`, { token: mem.token, body: { loanId, principalAmount: "50", date: today(), method: "cash", idempotencyKey: uniq("uc") } }));
+    const r = await ok(pay(o, loanId, { principalAmount: "60", date: today() }));
     expect(r.settledClaimId).toBeNull(); // amounts differ: not closed automatically
     const [listed] = await ok<any[]>(api("GET", `/orgs/${o.orgId}/upad-payments`, { token: o.admin.token }));
     expect(listed.alreadyRecorded).toMatchObject({ paymentId: r.payment._id, principalPaise: 6_000 });
@@ -379,17 +381,17 @@ describe("'I have paid' with a purpose", () => {
     expect((await ok(api("GET", `/orgs/${o.orgId}/fund-loans/${loanId}`, { token: o.admin.token }))).loan.outstandingPaise).toBe(64_000);
     expect(await ok<any[]>(api("GET", `/orgs/${o.orgId}/upad-payments`, { token: o.admin.token }))).toHaveLength(0);
     // a claim with no covering payment can't be settled
-    const c5 = await ok(api("POST", `/orgs/${o.orgId}/me/upad-payments`, { token: mem.token, body: { loanId, principalAmount: "10", date: "2026-10-24", method: "cash", idempotencyKey: uniq("uc") } }));
+    const c5 = await ok(api("POST", `/orgs/${o.orgId}/me/upad-payments`, { token: mem.token, body: { loanId, principalAmount: "10", date: today(), method: "cash", idempotencyKey: uniq("uc") } }));
     expect((await api("POST", `/orgs/${o.orgId}/upad-payments/${c5.claim._id}/settle`, { token: o.admin.token })).status).toBe(400);
     await ok(api("POST", `/orgs/${o.orgId}/upad-payments/${c5.claim._id}/reject`, { token: o.admin.token, body: { reason: "Test" } }));
   });
 
   it("'Other' payments need a note and don't touch hapta", async () => {
-    const send = (body: Record<string, unknown>) => api("POST", `/orgs/${o.orgId}/me/payment-requests`, { token: mem.token, body: { purpose: "other", amount: "251", date: "2026-10-20", method: "cash", idempotencyKey: uniq("pr"), ...body } });
+    const send = (body: Record<string, unknown>) => api("POST", `/orgs/${o.orgId}/me/payment-requests`, { token: mem.token, body: { purpose: "other", amount: "251", date: today(), method: "cash", idempotencyKey: uniq("pr"), ...body } });
     expect((await send({})).status).toBe(400);
     const r = await ok(send({ notes: "Navratri donation" }));
     expect(r.payment).toMatchObject({ kind: "other_income", status: "pending", allocations: [] });
-    const h = await ok(api("POST", `/orgs/${o.orgId}/me/payment-requests`, { token: mem.token, body: { amount: "1000", date: "2026-10-20", method: "cash", idempotencyKey: uniq("pr") } }));
+    const h = await ok(api("POST", `/orgs/${o.orgId}/me/payment-requests`, { token: mem.token, body: { amount: "1000", date: today(), method: "cash", idempotencyKey: uniq("pr") } }));
     expect(h.payment.kind).toBe("hapta"); // default purpose stays hapta
     expect(h.payment.allocations.length).toBeGreaterThan(0);
   });
