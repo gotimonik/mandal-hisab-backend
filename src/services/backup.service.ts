@@ -1,4 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { gunzipSync } from "node:zlib";
 import { BSON, ObjectId, type Collection, type Document } from "mongodb";
 import { cols, ensureIndexes, type Collections } from "@/lib/collections";
 import { env } from "@/config/env";
@@ -128,6 +129,8 @@ export interface RestoreOptions {
   replace?: boolean;
   /** Load a file whose signature doesn't match (edited, or made with another AUTH_SECRET). */
   trustUnsigned?: boolean;
+  /** Who restored it (platform admin), for the audit log. */
+  actorId?: ObjectId | null;
 }
 
 export interface RestoreResult {
@@ -135,6 +138,8 @@ export interface RestoreResult {
   backupCreatedAt: string;
   signatureValid: boolean;
   replacedExisting: boolean;
+  /** The Mandal is still in the database (a restore needs "replace"). */
+  existsInDatabase: boolean;
   usersCreated: number;
   usersMatchedByEmail: number;
   counts: Record<string, number>;
@@ -182,7 +187,7 @@ export async function restoreBackup(text: string, opts: RestoreOptions = {}): Pr
   await ensureIndexes();
   const c = await cols();
   const existing = await c.organizations.findOne({ _id: org._id }, { projection: { name: 1 } });
-  if (existing && !opts.replace) throw new BackupError(`"${existing.name}" is still in the database. Run again with --replace to overwrite it with this backup.`);
+  if (existing && !opts.replace && !opts.dryRun) throw new BackupError(`"${existing.name}" is still in the database. Run again with --replace to overwrite it with this backup.`);
   const clash = await c.organizations.findOne({ code: org.code, _id: { $ne: org._id } }, { projection: { name: 1 } });
   if (clash) throw new BackupError(`Another Mandal ("${clash.name}") now uses the join code ${org.code}. Change one of the codes first.`);
 
@@ -209,7 +214,8 @@ export async function restoreBackup(text: string, opts: RestoreOptions = {}): Pr
     organization: file.organization,
     backupCreatedAt: file.createdAt,
     signatureValid,
-    replacedExisting: !!existing,
+    replacedExisting: !!existing && !opts.dryRun,
+    existsInDatabase: !!existing,
     usersCreated: newUsers.length,
     usersMatchedByEmail: matched,
     counts,
@@ -229,8 +235,20 @@ export async function restoreBackup(text: string, opts: RestoreOptions = {}): Pr
     const docs = data[name] ?? [];
     if (docs.length) await anyCol(c, name).insertMany(docs.map((d) => remapIds(d, map)));
   }
-  await audit({ organizationId: org._id as ObjectId, actorId: null, action: "organization.restore", entityType: "organization", entityId: org._id as ObjectId, reason: `Restored from the backup of ${file.createdAt}` });
+  await audit({ organizationId: org._id as ObjectId, actorId: opts.actorId ?? null, action: "organization.restore", entityType: "organization", entityId: org._id as ObjectId, reason: `Restored from the backup of ${file.createdAt}` });
   return result;
+}
+
+/** The text of an uploaded backup: as downloaded, or gzip-compressed (the platform panel compresses it). */
+export function backupText(bytes: Uint8Array): string {
+  const raw = bytes[0] === 0x1f && bytes[1] === 0x8b ? (() => {
+    try {
+      return gunzipSync(bytes, { maxOutputLength: 200 * 1024 * 1024 });
+    } catch {
+      throw new BackupError("The compressed backup file is damaged");
+    }
+  })() : bytes;
+  return new TextDecoder("utf-8").decode(raw);
 }
 
 /** Everything of one Mandal (not its people's accounts): used before loading a backup over it. */

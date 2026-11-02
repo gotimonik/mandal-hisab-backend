@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { NextRequest } from "next/server";
 import { ObjectId } from "mongodb";
+import { gzipSync } from "node:zlib";
 import { createApiHandler } from "@/lib/http";
 import { buildRouter } from "@/routes";
 import { COLLECTION_NAMES, cols } from "@/lib/collections";
@@ -151,5 +152,41 @@ describe("Mandal backup", () => {
     expect(await ok(api("GET", `/orgs/${o.orgId}/backup/status`, { token: o.admin.token }))).toEqual({ lastBackupAt: null, lastBackupBy: null, due: true });
     const m = await registerAndLogin("Plain member");
     expect((await api("GET", `/orgs/${o.orgId}/backup/status`, { token: m.token })).status).toBe(404);
+  });
+
+  it("platform admins restore from the admin panel: check first, then restore (compressed upload works)", async () => {
+    const o = await setupOrg("Panel Mandal");
+    await ok(api("POST", `/orgs/${o.orgId}/members`, { token: o.admin.token, body: { name: "Bhavna" } }));
+    const text = (await download(o.orgId, o.admin.token)).text;
+    const upload = (body: string | Uint8Array, q = "", token = o.platformAdmin.token) => {
+      const form = new FormData();
+      form.set("file", new File([body as BlobPart], "backup.json.gz", { type: "application/gzip" }));
+      return api("POST", `/platform/backups/restore${q}`, { token, form });
+    };
+    // only platform admins
+    expect((await upload(text, "?dryRun=1", o.admin.token)).status).toBe(403);
+
+    // check: the Mandal is still there → reported, nothing changed
+    const check = await ok(upload(gzipSync(text), "?dryRun=1"));
+    expect(check).toMatchObject({ dryRun: true, signatureValid: true, existsInDatabase: true, organization: { name: "Panel Mandal" } });
+    expect(check.counts.members).toBe(2); // the admin (also a member) and Bhavna
+
+    // the Mandal is lost; restore it from the panel
+    await disaster(o.orgId, []);
+    expect(await ok(upload(gzipSync(text), "?dryRun=1"))).toMatchObject({ existsInDatabase: false });
+    const r = await ok(upload(gzipSync(text)));
+    expect(r).toMatchObject({ dryRun: false, replacedExisting: false });
+    expect((await ok(api("GET", `/orgs/${o.orgId}/members`, { token: o.admin.token }))).items.map((m: any) => m.name)).toContain("Bhavna");
+    // still there now → restoring again needs replace
+    expect((await upload(text)).error?.message).toMatch(/--replace|still in the database/);
+    expect(await ok(upload(text, "?replace=1"))).toMatchObject({ replacedExisting: true });
+    // an edited file is refused unless trusted on purpose
+    expect((await upload(text.replace("Bhavna", "Bhavana"), "?replace=1")).status).toBe(400);
+    expect(await ok(upload(text.replace("Bhavna", "Bhavana"), "?replace=1&trustUnsigned=1"))).toMatchObject({ signatureValid: false });
+    expect((await upload("garbage", "?dryRun=1")).status).toBe(400);
+    // the restore is logged with the platform admin who did it
+    const c = await cols();
+    const log = await c.auditLogs.findOne({ organizationId: new ObjectId(o.orgId), action: "organization.restore" }, { sort: { createdAt: -1 } });
+    expect(log?.actorId?.toHexString()).toBe(o.platformAdmin.userId);
   });
 });

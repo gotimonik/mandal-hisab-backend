@@ -14,20 +14,20 @@
  */
 import "./load-env";
 import { readFileSync } from "node:fs";
-import { BackupError, restoreBackup } from "../src/services/backup.service";
+import { BackupError, backupText, restoreBackup } from "../src/services/backup.service";
 import { closeDb } from "../src/lib/db";
 
 async function main() {
   const args = process.argv.slice(2);
   const path = args.find((a) => !a.startsWith("--"));
   if (!path) throw new BackupError("Give the backup file: npm run backup:restore -- <file.json> [--dry-run] [--replace]");
-  const r = await restoreBackup(readFileSync(path, "utf8"), {
+  const r = await restoreBackup(backupText(readFileSync(path)), {
     dryRun: args.includes("--dry-run"),
     replace: args.includes("--replace"),
     trustUnsigned: args.includes("--trust-unsigned"),
   });
   console.info(`${r.dryRun ? "Checked (nothing changed)" : "Restored"}: ${r.organization.name} (${r.organization.code}) — backup of ${r.backupCreatedAt}`);
-  console.info(`Signature: ${r.signatureValid ? "valid" : "NOT valid (loaded with --trust-unsigned)"}${r.replacedExisting ? " · replaced the Mandal that was in the database" : ""}`);
+  console.info(`Signature: ${r.signatureValid ? "valid" : "NOT valid"}${r.replacedExisting ? " · replaced the Mandal that was in the database" : r.existsInDatabase ? " · the Mandal is still in the database (restore needs --replace)" : ""}`);
   console.info(`People: ${r.usersMatchedByEmail} already have an account, ${r.usersCreated} ${r.dryRun ? "would get" : "got"} theirs back (they set a password with "Forgot password")`);
   for (const [name, n] of Object.entries(r.counts)) if (n) console.info(`  ${name.padEnd(26)} ${n}`);
 }
