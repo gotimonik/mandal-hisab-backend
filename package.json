@@ -14,7 +14,8 @@
     "db:init": "tsx scripts/init-db.ts",
     "db:search-index": "tsx scripts/create-search-index.ts",
     "seed:admin": "tsx scripts/seed-platform-admin.ts",
-    "seed:example": "tsx scripts/seed-example.ts"
+    "seed:example": "tsx scripts/seed-example.ts",
+    "backup:restore": "tsx scripts/restore-backup.ts"
   },
   "dependencies": {
     "@date-fns/utc": "^2.1.1",

@@ -74,7 +74,8 @@ export interface Collections {
   meetings: Collection<MeetingDoc>;
 }
 
-const NAMES: (keyof Collections)[] = [
+/** Every collection (exported for the backup completeness test). */
+export const COLLECTION_NAMES: (keyof Collections)[] = [
   "users",
   "sessions",
   "authTokens",
@@ -113,7 +114,7 @@ const NAMES: (keyof Collections)[] = [
 
 export function collectionsFor(db: Db): Collections {
   const out = {} as Record<string, Collection<Document>>;
-  for (const n of NAMES) out[n] = db.collection(n);
+  for (const n of COLLECTION_NAMES) out[n] = db.collection(n);
   return out as unknown as Collections;
 }
 

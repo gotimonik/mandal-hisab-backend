@@ -1,3 +1,4 @@
+import * as backup from "@/services/backup.service";
 import { z } from "zod";
 import type { Router } from "@/lib/http";
 import { parseObjectId } from "@/lib/auth";
@@ -26,6 +27,16 @@ export function registerOrgRoutes(r: Router) {
     return uploadOrgLogo(ctx, await formFile(req, LOGO_MAX_BYTES, LOGO_TOO_BIG));
   });
   r.delete("/orgs/:orgId/logo", async (req) => removeOrgLogo(await req.org("org.settings.manage", { write: true, allowPending: true })));
+
+  /* ---------------- backup: the admin keeps a copy of everything (restored with scripts/restore-backup.ts) */
+  r.get("/orgs/:orgId/backup", async (req) => {
+    const b = await backup.createBackup(await req.org("org.settings.manage"));
+    return new Response(b.json, {
+      status: 200,
+      headers: { "Content-Type": "application/json; charset=utf-8", "Content-Disposition": `attachment; filename="${b.filename}"`, "Cache-Control": "no-store" },
+    });
+  });
+  r.get("/orgs/:orgId/backup/status", async (req) => backup.backupStatus(await req.org("org.settings.manage")));
 
   /* ---------------- app users & roles */
   r.get("/orgs/:orgId/memberships", async (req) => {
