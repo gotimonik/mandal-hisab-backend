@@ -186,6 +186,21 @@ export async function restoreBackup(text: string, opts: RestoreOptions = {}): Pr
   if (!signatureValid && !opts.trustUnsigned) {
     throw new BackupError("The backup file was changed after it was downloaded (or was made with a different AUTH_SECRET). Not restored. Use --trust-unsigned only if you are sure the file is genuine.");
   }
+  return restoreMandalData({ organization: file.organization, createdAt: file.createdAt, signatureValid }, data, opts);
+}
+
+/**
+ * Load one Mandal's records (from a Mandal backup, or picked out of a nightly server backup).
+ * `keepPasswords`: the records are our own server copy, which keeps password hashes, so
+ * people sign in as before.
+ */
+export async function restoreMandalData(
+  meta: { organization: BackupFile["organization"]; createdAt: string; signatureValid: boolean },
+  data: Record<string, Document[]>,
+  opts: RestoreOptions & { keepPasswords?: boolean } = {},
+): Promise<RestoreResult> {
+  const file = meta;
+  const signatureValid = meta.signatureValid;
   const org = data.organizations?.[0];
   if (!org?._id) throw new BackupError("The backup has no Mandal in it");
   await ensureIndexes();
@@ -229,12 +244,15 @@ export async function restoreBackup(text: string, opts: RestoreOptions = {}): Pr
 
   if (existing) await deleteMandalData(org._id as ObjectId);
   if (newUsers.length) {
-    // nobody knows this password: "Forgot password" sets a real one
+    // nobody knows this password: "Forgot password" sets a real one (server copies keep the real one)
     const passwordHash = await hashPassword(randomBytes(32).toString("hex"));
-    await c.users.insertMany(newUsers.map((u) => ({ ...u, passwordHash, isPlatformAdmin: false, sessionVersion: (u.sessionVersion as number) ?? 1 })) as never);
+    await c.users.insertMany(newUsers.map((u) => ({ ...u, passwordHash: opts.keepPasswords && u.passwordHash ? u.passwordHash : passwordHash, isPlatformAdmin: opts.keepPasswords ? !!u.isPlatformAdmin : false, sessionVersion: (u.sessionVersion as number) ?? 1 })) as never);
   }
   await c.organizations.insertOne(remapIds(org, map) as never);
-  if (data.counters?.length) await c.counters.insertMany(data.counters as never);
+  // numbering (receipt no. …): never go back below a number that may already be on a shared receipt
+  if (data.counters?.length) {
+    await c.counters.bulkWrite(data.counters.map((d) => ({ updateOne: { filter: { _id: d._id as string }, update: { $max: { seq: d.seq as number } }, upsert: true } })));
+  }
   for (const name of ORG_COLLECTIONS) {
     const docs = data[name] ?? [];
     if (docs.length) await anyCol(c, name).insertMany(docs.map((d) => remapIds(d, map)));

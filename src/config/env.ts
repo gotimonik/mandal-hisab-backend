@@ -25,6 +25,12 @@ const EnvSchema = z.object({
    * push notifications through Firebase Cloud Messaging. Unset = no pushes (in-app only).
    */
   FCM_SERVICE_ACCOUNT: z.string().optional(),
+  /**
+   * Encrypts the nightly server backups (server-backup.service). Any long random text (32+
+   * characters); keep a copy somewhere safe — without it the backups can't be restored.
+   * Unset = no nightly server backups.
+   */
+  BACKUP_ENCRYPTION_KEY: z.string().min(32, "BACKUP_ENCRYPTION_KEY must be at least 32 characters").optional(),
   MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(5 * 1024 * 1024),
 });
 

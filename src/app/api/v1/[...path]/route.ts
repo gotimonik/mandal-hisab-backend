@@ -3,6 +3,8 @@ import { buildRouter } from "@/routes";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+// the daily cron also writes the nightly database backup
+export const maxDuration = 300;
 
 const handler = createApiHandler(buildRouter(), "/api/v1");
 

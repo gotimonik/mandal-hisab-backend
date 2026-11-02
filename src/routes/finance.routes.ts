@@ -10,6 +10,7 @@ import * as de from "@/services/donation-expense.service";
 import * as loans from "@/services/loan.service";
 import * as reports from "@/services/report.service";
 import { runDailyJobs } from "@/services/jobs.service";
+import { runServerBackup } from "@/services/server-backup.service";
 import { nextMeeting } from "@/services/meeting.service";
 import { formFile, uploadAttachment } from "@/services/upload.service";
 import type { Permission } from "@/lib/permissions";
@@ -160,6 +161,12 @@ export function registerFinanceRoutes(r: Router) {
     const secret = env().CRON_SECRET;
     const h = req.raw.headers.get("authorization") ?? "";
     if (!secret || !safeEqual(h, `Bearer ${secret}`)) throw unauthorized("Invalid cron secret");
-    return runDailyJobs();
+    const jobs = await runDailyJobs();
+    // then the nightly encrypted copy of the whole database (a failure here never hides the jobs' report)
+    const serverBackup = await runServerBackup().catch((e) => {
+      console.error("[server-backup]", e);
+      return { skipped: true as const, reason: `Failed: ${(e as Error).message}` };
+    });
+    return { ...jobs, serverBackup };
   });
 }
