@@ -45,6 +45,15 @@ async function runForOrg(org: OrganizationDoc, now: Date, report: JobReport) {
   const c = await cols();
   const today = todayIn(org.settings.timezone, now);
 
+  // 0. members who paid upad interest ahead: new interest is paid from the advance
+  const withAdvance = await c.members.find({ organizationId: org._id, upadAdvancePaise: { $gt: 0 } }, { projection: { _id: 1 } }).toArray();
+  if (withAdvance.length) {
+    const { refreshFundLoanDues } = await import("./fund-loan.service");
+    const { applyUpadAdvance } = await import("./upad-interest.service");
+    await refreshFundLoanDues(org);
+    for (const m of withAdvance) await applyUpadAdvance(org, m._id);
+  }
+
   // 1. generation
   const schemes = await c.haptaSchemes.find({ organizationId: org._id, status: "active" }).toArray();
   const horizon = horizonFor(org, today);

@@ -231,6 +231,12 @@ export interface MemberDoc extends Timestamps {
   joining?: MemberJoining;
   /** Leaving partway through: paid their balance + share of the Mandal's own money, then marked "left". */
   leaving?: MemberLeaving;
+  /**
+   * Upad interest paid ahead (e.g. ₹200 paid when ₹187.50 was due → ₹12.50). Used automatically
+   * for the next interest due on any of the member's upads; held in liability:upad_advance and not
+   * shared among members until used. See upad-interest.service.
+   */
+  upadAdvancePaise?: number;
 }
 
 export interface MemberJoining {
@@ -597,6 +603,7 @@ export type TransactionType =
   | "member_adjustment"
   | "fund_loan_given"
   | "fund_loan_payment"
+  | "upad_advance_return"
   | "closing_distribution"
   | "member_joining"
   | "member_leaving";
@@ -879,7 +886,45 @@ export interface FundLoanPaymentDoc {
   status: "valid" | "reversed";
   reversalReason?: string;
   reversalTransactionId?: Id;
-  receiptId: Id;
+  /** null when the interest was paid from the member's advance (no money changed hands) */
+  receiptId: Id | null;
+  transactionId: Id;
+  idempotencyKey: string;
+  recordedBy: Id;
+  createdAt: Date;
+  /** Part of one payment covering several upads (UpadInterestPaymentDoc): reversed together. */
+  groupId?: Id | null;
+  /** Interest paid beyond what was due, kept as the member's upad advance. */
+  advanceAddedPaise?: number;
+}
+
+/**
+ * One interest payment for a member, covering all their upads (oldest month first), or the
+ * automatic use of their advance when new interest falls due. Each upad it touched has its own
+ * FundLoanPaymentDoc (groupId = this id); they share one ledger transaction and one receipt.
+ */
+export interface UpadInterestPaymentDoc {
+  _id: Id;
+  organizationId: Id;
+  memberId: Id;
+  /** "payment": money received · "advance": the member's advance used for interest */
+  kind: "payment" | "advance";
+  date: Date;
+  /** money received (0 for kind "advance") */
+  amountPaise: number;
+  /** interest settled on the upads, from the money and the advance */
+  interestPaise: number;
+  advanceUsedPaise: number;
+  advanceAddedPaise: number;
+  loanPaymentIds: Id[];
+  accountId: Id | null;
+  method?: string;
+  reference?: string;
+  note?: string;
+  status: "valid" | "reversed";
+  reversalReason?: string;
+  reversalTransactionId?: Id;
+  receiptId: Id | null;
   transactionId: Id;
   idempotencyKey: string;
   recordedBy: Id;
@@ -931,7 +976,8 @@ export interface UpadPaymentClaimDoc {
   _id: Id;
   organizationId: Id;
   memberId: Id;
-  loanId: Id;
+  /** null: interest for all the member's upads at once */
+  loanId: Id | null;
   interestPaise: number;
   principalPaise: number;
   date: Date;

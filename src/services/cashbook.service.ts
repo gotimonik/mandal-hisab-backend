@@ -35,6 +35,7 @@ const CATEGORY: Record<string, { label: string; side: "in" | "out" | "both" }> =
   loan_disbursement: { label: "Loans given", side: "out" },
   fund_loan_given: { label: "Upad given", side: "out" },
   fund_loan_payment: { label: "Upad interest & repayments received", side: "in" },
+  upad_advance_return: { label: "Upad advance returned", side: "out" },
   opening_balance: { label: "Opening cash", side: "in" },
   adjustment: { label: "Adjustments", side: "both" },
   transfer: { label: "Transfers between accounts", side: "both" },

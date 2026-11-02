@@ -306,7 +306,9 @@ export async function adminDashboard(ctx: OrgContext) {
       /** opening + hapta + interest − withdrawals (+ other adjustments) = total member balances */
       memberBalanceParts: balanceParts,
       mandalCashPaise: accounts.reduce((s, a) => s + byKey(ledgerFacet.allTime, faKey(a._id)), 0),
-      mandalSurplusPaise: accounts.reduce((s, a) => s + byKey(ledgerFacet.allTime, faKey(a._id)), 0) + byKey(ledgerFacet.allTime, "asset:loans_receivable") + byKey(ledgerFacet.allTime, FUND_LOANS) - byKey(ledgerFacet.allTime, "liability:member_funds"),
+      mandalSurplusPaise: accounts.reduce((s, a) => s + byKey(ledgerFacet.allTime, faKey(a._id)), 0) + byKey(ledgerFacet.allTime, "asset:loans_receivable") + byKey(ledgerFacet.allTime, FUND_LOANS) - byKey(ledgerFacet.allTime, "liability:member_funds") - byKey(ledgerFacet.allTime, "liability:upad_advance"),
+      /** upad interest paid ahead by members (cash held for them) */
+      upadAdvancePaise: byKey(ledgerFacet.allTime, "liability:upad_advance"),
       fundLoansOutstandingPaise: fundLoans.outstandingPaise,
       fundLoanInterestDuePaise: fundLoans.interestDuePaise,
       activeFundLoans: fundLoans.activeLoans,

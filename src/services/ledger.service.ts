@@ -39,6 +39,8 @@ export const REIMBURSEMENTS_PAYABLE = "liability:reimbursements_payable";
 /** Money owed to members: their hapta savings + interest credited − withdrawals */
 export const MEMBER_FUNDS = "liability:member_funds";
 export const MEMBER_INTEREST_EXPENSE = "expense:member_interest";
+/** Upad interest members paid ahead: owed back to them until it's used for interest (or returned). */
+export const UPAD_ADVANCE = "liability:upad_advance";
 /** Money lent to members out of the Mandal fund (interest-only loans). */
 export const FUND_LOANS = "asset:fund_loans";
 export const OPENING_EQUITY = "equity:opening_balance";
@@ -67,6 +69,7 @@ const LABELS: Record<string, string> = {
   "asset:fund_loans": "Upad given (loans from the fund)",
   "liability:reimbursements_payable": "Reimbursements payable",
   "liability:member_funds": "Member balances (owed to members)",
+  "liability:upad_advance": "Upad interest paid in advance",
   "expense:member_interest": "Interest credited to members",
   "equity:opening_balance": "Opening balance equity",
   "equity:adjustments": "Adjustments",

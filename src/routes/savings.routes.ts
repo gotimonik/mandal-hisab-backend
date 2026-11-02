@@ -12,6 +12,7 @@ import * as wd from "@/services/withdrawal.service";
 import * as cash from "@/services/cashbook.service";
 import * as fl from "@/services/fund-loan.service";
 import * as ur from "@/services/upad-request.service";
+import * as ui from "@/services/upad-interest.service";
 import * as mp from "@/services/member-payments.service";
 import * as orgService from "@/services/organization.service";
 import * as meetings from "@/services/meeting.service";
@@ -116,6 +117,15 @@ export function registerSavingsRoutes(r: Router) {
     const settledClaimId = res.duplicate ? null : await mp.settleMatchingClaim(ctx, res.payment);
     return { ...res, settledClaimId };
   });
+  /* interest for all of a member's upads at once; the extra is kept as their upad advance */
+  r.get("/orgs/:orgId/members/:memberId/upad-interest", async (req) => ui.memberUpadInterest(await req.org("members.view"), parseObjectId(req.params.memberId, "Member")));
+  r.post("/orgs/:orgId/members/:memberId/upad-interest", async (req) => ui.receiveMemberInterest(await req.org("payments.record", W), parseObjectId(req.params.memberId, "Member"), await req.body(ui.MemberInterestPaymentSchema)));
+  r.post("/orgs/:orgId/upad-interest-payments/:id/reverse", async (req) => {
+    const b = await req.body(z.object({ reason }));
+    return ui.reverseInterestPayment(await req.org("transactions.adjust", W), parseObjectId(req.params.id, "Payment"), b.reason);
+  });
+  r.post("/orgs/:orgId/members/:memberId/upad-advance/return", async (req) => ui.returnUpadAdvance(await req.org("withdrawals.record", W), parseObjectId(req.params.memberId, "Member"), await req.body(ui.ReturnAdvanceSchema)));
+  r.get("/orgs/:orgId/upad-advances", async (req) => ui.advancesHeld((await req.org("members.view")).orgId));
   r.post("/orgs/:orgId/fund-loans/:id/cancel", async (req) => {
     const b = await req.body(z.object({ reason }));
     return fl.cancelFundLoan(await req.org("transactions.adjust", W), parseObjectId(req.params.id, "Upad"), b.reason);

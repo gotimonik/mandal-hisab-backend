@@ -10,7 +10,8 @@ import { parseDateOnly, todayIn } from "@/lib/dates";
 import type { OrgContext } from "@/lib/auth";
 import type { FundLoanDoc, FundLoanDueDoc, FundLoanPaymentDoc, OrganizationDoc } from "@/types/models";
 import { dateOnly, idempotencyKey, money, optText, rateString } from "@/validators/common";
-import { FUND_LOANS, INCOME_KEYS, MEMBER_FUNDS, faKey, fyNumber, postTransaction, reverseTransaction } from "./ledger.service";
+import { FUND_LOANS, INCOME_KEYS, MEMBER_FUNDS, UPAD_ADVANCE, faKey, fyNumber, postTransaction, reverseTransaction } from "./ledger.service";
+import { aheadLimit, applyUpadAdvance, changeAdvance, reverseInterestPayment } from "./upad-interest.service";
 import { availableCashPaise, balanceOf, requireAccount } from "./account.service";
 import { postMemberEntry } from "./member-ledger.service";
 import { rateInterest } from "./member-interest.service";
@@ -62,7 +63,7 @@ function dueDateFor(org: Pick<OrganizationDoc, "settings">, period: string) {
  * Done in a fixed number of round trips regardless of how many loans / months there are:
  * one read of the dues, one read of the payments, one bulk write of the changes.
  */
-async function refreshDuesFor(org: Pick<OrganizationDoc, "_id" | "settings">, loans: FundLoanDoc[], session?: ClientSession) {
+export async function refreshDuesFor(org: Pick<OrganizationDoc, "_id" | "settings">, loans: FundLoanDoc[], session?: ClientSession) {
   const live = loans.filter((l) => l.status !== "cancelled");
   if (live.length === 0) return;
   const c = await cols();
@@ -101,10 +102,16 @@ async function refreshDuesFor(org: Pick<OrganizationDoc, "_id" | "settings">, lo
     }
   }
   if (ops.length === 0) return;
+  let created = 0;
   try {
-    await c.fundLoanDues.bulkWrite(ops, { ordered: false, session });
+    created = (await c.fundLoanDues.bulkWrite(ops, { ordered: false, session })).upsertedCount;
   } catch (e) {
     if (!isDuplicateKeyError(e)) throw e; // a concurrent request created the same month first
+  }
+  // New interest fell due: members who paid ahead have it paid from their advance straight away.
+  if (created > 0 && !session) {
+    const { applyAdvancesFor } = await import("./upad-interest.service");
+    await applyAdvancesFor(org, [...new Map(live.map((l) => [l.memberId.toHexString(), l.memberId])).values()]);
   }
 }
 
@@ -255,7 +262,7 @@ export function splitByWeight(amount: number, weights: { id: string; w: number }
   return out;
 }
 
-async function interestShares(orgId: ObjectId, amount: number, borrower: ObjectId, session: ClientSession) {
+export async function interestShares(orgId: ObjectId, amount: number, borrower: ObjectId, session: ClientSession) {
   const c = await cols();
   const members = await c.members.find({ organizationId: orgId, status: "active" }, { session, projection: { balancePaise: 1 } }).toArray();
   let weights = members.filter((m) => (m.balancePaise ?? 0) > 0).map((m) => ({ id: m._id.toHexString(), w: m.balancePaise! }));
@@ -306,13 +313,22 @@ export async function receiveFundLoanPayment(ctx: OrgContext, loanId: ObjectId, 
       const account = await requireAccount(ctx.orgId, accountId!, session);
       const id = new ObjectId();
 
-      // interest: oldest unpaid month first
+      // interest: oldest unpaid month first; paid beyond what's due → the member's upad advance
       const allocations: FundLoanPaymentDoc["allocations"] = [];
+      let applied = input.interestAmount;
+      let extra = 0;
       if (input.interestAmount > 0) {
         const dues = await c.fundLoanDues.find({ organizationId: ctx.orgId, loanId: loan._id }, { session }).sort({ period: 1 }).toArray();
         const unpaid = dues.reduce((s, d) => s + d.interestPaise - d.paidPaise, 0);
-        if (input.interestAmount > unpaid) throw badRequest(unpaid === 0 ? "No interest is due on this upad right now" : `Only ${formatMoney(unpaid, ctx.org.settings.currency)} interest is due on this upad`);
-        let left = input.interestAmount;
+        if (input.interestAmount > unpaid) {
+          const ahead = aheadLimit([loan]);
+          if (ahead === 0) throw badRequest(unpaid === 0 ? "No interest is due on this upad right now" : `Only ${formatMoney(unpaid, ctx.org.settings.currency)} interest is due on this upad`);
+          if (input.interestAmount > unpaid + ahead) throw badRequest(`That's more than the interest due plus a year ahead (${formatMoney(unpaid + ahead, ctx.org.settings.currency)}). Check the amount.`);
+          applied = unpaid;
+          extra = input.interestAmount - unpaid;
+          await changeAdvance(ctx.orgId, loan.memberId, extra, session);
+        }
+        let left = applied;
         for (const d of dues) {
           if (left <= 0) break;
           const take = Math.min(left, d.interestPaise - d.paidPaise);
@@ -343,15 +359,16 @@ export async function receiveFundLoanPayment(ctx: OrgContext, loanId: ObjectId, 
         }
       }
 
-      // interest shares
-      const shareMap = savings && input.interestAmount > 0 ? await interestShares(ctx.orgId, input.interestAmount, loan.memberId, session) : new Map<string, number>();
+      // interest shares (only what was due: the advance isn't shared until it's used)
+      const shareMap = savings && applied > 0 ? await interestShares(ctx.orgId, applied, loan.memberId, session) : new Map<string, number>();
       const number = loan.number;
       const periods = allocations.map((a) => a.period);
       const periodText = periods.length ? (periods.length === 1 ? periods[0] : `${periods[0]} to ${periods[periods.length - 1]}`) : "";
       const total = input.interestAmount + input.principalAmount;
       const lines = [
         { accountKey: faKey(account._id), debitPaise: total },
-        ...(savings ? [...shareMap.entries()].map(([mid, amt]) => ({ accountKey: MEMBER_FUNDS, creditPaise: amt, memberId: new ObjectId(mid) })) : input.interestAmount > 0 ? [{ accountKey: INCOME_KEYS.interest, creditPaise: input.interestAmount }] : []),
+        ...(savings ? [...shareMap.entries()].map(([mid, amt]) => ({ accountKey: MEMBER_FUNDS, creditPaise: amt, memberId: new ObjectId(mid) })) : applied > 0 ? [{ accountKey: INCOME_KEYS.interest, creditPaise: applied }] : []),
+        ...(extra > 0 ? [{ accountKey: UPAD_ADVANCE, creditPaise: extra, memberId: loan.memberId }] : []),
         ...(input.principalAmount > 0 ? [{ accountKey: FUND_LOANS, creditPaise: input.principalAmount, memberId: loan.memberId }] : []),
       ];
       const txn = await postTransaction(
@@ -359,7 +376,7 @@ export async function receiveFundLoanPayment(ctx: OrgContext, loanId: ObjectId, 
           org: ctx.org,
           type: "fund_loan_payment",
           date: input.date,
-          description: `${member?.name ?? "Member"} — upad ${number}: ${[input.interestAmount ? `interest ${formatMoney(input.interestAmount, ctx.org.settings.currency)}${periodText ? ` (${periodText})` : ""}` : "", input.principalAmount ? `upad returned ${formatMoney(input.principalAmount, ctx.org.settings.currency)}` : ""].filter(Boolean).join(", ")}`,
+          description: `${member?.name ?? "Member"} — upad ${number}: ${[applied ? `interest ${formatMoney(applied, ctx.org.settings.currency)}${periodText ? ` (${periodText})` : ""}` : "", extra ? `${formatMoney(extra, ctx.org.settings.currency)} kept as advance` : "", input.principalAmount ? `upad returned ${formatMoney(input.principalAmount, ctx.org.settings.currency)}` : ""].filter(Boolean).join(", ")}`,
           lines,
           createdBy: ctx.user._id,
           memberId: loan.memberId,
@@ -401,7 +418,8 @@ export async function receiveFundLoanPayment(ctx: OrgContext, loanId: ObjectId, 
           method: input.method,
           reference: input.reference,
           lines: [
-            ...(input.interestAmount ? [{ description: `Upad ${number} interest${periodText ? ` — ${periodText}` : ""}`, amountPaise: input.interestAmount }] : []),
+            ...(applied ? [{ description: `Upad ${number} interest${periodText ? ` — ${periodText}` : ""}`, amountPaise: applied }] : []),
+            ...(extra ? [{ description: "Advance for the next upad interest", amountPaise: extra }] : []),
             ...(input.principalAmount ? [{ description: `Upad ${number} amount returned`, amountPaise: input.principalAmount }] : []),
           ],
           issuedBy: ctx.user._id,
@@ -414,7 +432,7 @@ export async function receiveFundLoanPayment(ctx: OrgContext, loanId: ObjectId, 
         loanId: loan._id,
         memberId: loan.memberId,
         date: input.date,
-        interestPaise: input.interestAmount,
+        interestPaise: applied,
         principalPaise: input.principalAmount,
         allocations,
         shares,
@@ -426,14 +444,17 @@ export async function receiveFundLoanPayment(ctx: OrgContext, loanId: ObjectId, 
         idempotencyKey: input.idempotencyKey,
         recordedBy: ctx.user._id,
         createdAt: new Date(),
+        ...(extra ? { advanceAddedPaise: extra } : {}),
       };
       await c.fundLoanPayments.insertOne(doc, { session });
-      await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "fundLoan.payment", entityType: "fundLoan", entityId: loan._id, after: { paymentId: id, interestPaise: input.interestAmount, principalPaise: input.principalAmount, periods } }, session);
+      await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "fundLoan.payment", entityType: "fundLoan", entityId: loan._id, after: { paymentId: id, interestPaise: applied, advanceAddedPaise: extra, principalPaise: input.principalAmount, periods } }, session);
       return doc;
     });
     const fresh = (await c.fundLoans.findOne({ _id: loan._id }))!;
     await refreshLoanDues(ctx.org, fresh);
-    await closeIfSettled(ctx, fresh);
+    await closeIfSettled(ctx.orgId, fresh);
+    // the extra pays any interest due on the member's other upads
+    if (payment.advanceAddedPaise) await applyUpadAdvance(ctx.org, loan.memberId);
     return { payment, duplicate: false };
   } catch (e) {
     if (isDuplicateKeyError(e)) {
@@ -445,10 +466,10 @@ export async function receiveFundLoanPayment(ctx: OrgContext, loanId: ObjectId, 
 }
 
 /** A loan is closed once the full amount is returned and no interest is left unpaid. */
-async function closeIfSettled(ctx: OrgContext, loan: FundLoanDoc) {
+export async function closeIfSettled(orgId: ObjectId, loan: FundLoanDoc) {
   if (loan.outstandingPaise > 0 || loan.status !== "active") return;
   const c = await cols();
-  const unpaid = await c.fundLoanDues.findOne({ organizationId: ctx.orgId, loanId: loan._id, $expr: { $lt: ["$paidPaise", "$interestPaise"] } });
+  const unpaid = await c.fundLoanDues.findOne({ organizationId: orgId, loanId: loan._id, $expr: { $lt: ["$paidPaise", "$interestPaise"] } });
   if (unpaid) return;
   await c.fundLoans.updateOne({ _id: loan._id, status: "active", outstandingPaise: 0 }, { $set: { status: "closed", closedAt: new Date(), updatedAt: new Date() } });
 }
@@ -461,11 +482,20 @@ export async function reverseFundLoanPayment(ctx: OrgContext, paymentId: ObjectI
   const today = todayIn(ctx.org.settings.timezone);
   const p = await c.fundLoanPayments.findOne({ _id: paymentId, organizationId: ctx.orgId });
   if (!p) throw notFound("Payment");
+  // part of one payment for several upads (or paid from the advance): reversed as a whole
+  if (p.groupId) return reverseInterestPayment(ctx, p.groupId, reasonText);
   const latest = await c.fundLoanPayments.findOne({ organizationId: ctx.orgId, loanId: p.loanId, status: "valid" }, { sort: { date: -1, createdAt: -1 } });
   if (p.status === "valid" && latest && !latest._id.equals(p._id)) throw badRequest("Only the latest payment on an upad can be reversed. Reverse the later payments first.");
   await withTransaction(async (session) => {
     const claimed = await c.fundLoanPayments.updateOne({ _id: p._id, status: "valid" }, { $set: { status: "reversed", reversalReason: reasonText } }, { session });
     if (claimed.modifiedCount !== 1) throw conflict("This payment is already reversed");
+    if (p.advanceAddedPaise) {
+      try {
+        await changeAdvance(ctx.orgId, p.memberId, -p.advanceAddedPaise, session);
+      } catch {
+        throw badRequest("The advance from this payment has already been used for later interest — reverse that first.");
+      }
+    }
     const rev = await reverseTransaction(ctx.org, p.transactionId, reasonText, ctx.user._id, today, session);
     for (const a of p.allocations) {
       await c.fundLoanDues.updateOne({ _id: a.dueId }, { $inc: { paidPaise: -a.amountPaise }, $set: { updatedAt: new Date() } }, { session });
@@ -480,7 +510,7 @@ export async function reverseFundLoanPayment(ctx: OrgContext, paymentId: ObjectI
       await c.fundLoans.updateOne({ _id: p.loanId }, { $inc: { outstandingPaise: p.principalPaise }, $set: { status: "active", closedAt: null, updatedAt: new Date() } }, { session });
     }
     await c.fundLoanPayments.updateOne({ _id: p._id }, { $set: { reversalTransactionId: rev._id } }, { session });
-    await cancelReceiptFor(ctx.orgId, "fundLoanPayment", p._id, session);
+    if (p.receiptId) await cancelReceiptFor(ctx.orgId, "fundLoanPayment", p._id, session);
     await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "fundLoan.payment.reverse", entityType: "fundLoan", entityId: p.loanId, reason: reasonText, after: { paymentId: p._id } }, session);
   });
   const loan = await c.fundLoans.findOne({ _id: p.loanId });
@@ -513,6 +543,8 @@ type LoanSummary = FundLoanDoc & {
   unpaidMonths: string[];
   interestPaidPaise: number;
   nextInterestPaise: number;
+  /** the borrower's upad advance (shared by all their upads) */
+  memberAdvancePaise: number;
 };
 
 async function summarize(orgId: ObjectId, loans: FundLoanDoc[]): Promise<LoanSummary[]> {
@@ -520,18 +552,20 @@ async function summarize(orgId: ObjectId, loans: FundLoanDoc[]): Promise<LoanSum
   const ids = loans.map((l) => l._id);
   const [dues, members] = await Promise.all([
     c.fundLoanDues.find({ organizationId: orgId, loanId: { $in: ids } }).sort({ period: 1 }).toArray(),
-    c.members.find({ _id: { $in: loans.map((l) => l.memberId) } }, { projection: { name: 1, membershipNumber: 1 } }).toArray(),
+    c.members.find({ _id: { $in: loans.map((l) => l.memberId) } }, { projection: { name: 1, membershipNumber: 1, upadAdvancePaise: 1 } }).toArray(),
   ]);
   return loans.map((l) => {
+    const m = members.find((x) => x._id.equals(l.memberId));
     const ld = dues.filter((d) => d.loanId.equals(l._id));
     const unpaid = ld.filter((d) => d.paidPaise < d.interestPaise);
     return {
       ...l,
-      member: members.find((m) => m._id.equals(l.memberId)) ?? null,
+      member: m ? { _id: m._id, name: m.name, membershipNumber: m.membershipNumber } : null,
       interestDuePaise: unpaid.reduce((s, d) => s + d.interestPaise - d.paidPaise, 0),
       unpaidMonths: unpaid.map((d) => d.period),
       interestPaidPaise: ld.reduce((s, d) => s + d.paidPaise, 0),
       nextInterestPaise: l.status === "active" ? rateInterest(l.outstandingPaise, l.monthlyRate) : 0,
+      memberAdvancePaise: m?.upadAdvancePaise ?? 0,
     };
   });
 }
@@ -635,13 +669,16 @@ export async function fundLoanTotals(org: Pick<OrganizationDoc, "_id" | "setting
   const c = await cols();
   const match: Record<string, unknown> = { organizationId: org._id };
   if (memberId) match.memberId = memberId;
-  const [loans, dues] = await Promise.all([
+  const [loans, dues, adv] = await Promise.all([
     c.fundLoans.find({ ...match, status: "active" }, { projection: { outstandingPaise: 1, monthlyRate: 1, number: 1 } }).toArray(),
     c.fundLoanDues.aggregate<{ t: number }>([{ $match: match }, { $group: { _id: null, t: { $sum: { $subtract: ["$interestPaise", "$paidPaise"] } } } }]).toArray(),
+    c.members.aggregate<{ t: number }>([{ $match: { organizationId: org._id, ...(memberId ? { _id: memberId } : {}), upadAdvancePaise: { $gt: 0 } } }, { $group: { _id: null, t: { $sum: "$upadAdvancePaise" } } }]).toArray(),
   ]);
   return {
     activeLoans: loans.length,
     outstandingPaise: loans.reduce((s, l) => s + l.outstandingPaise, 0),
     interestDuePaise: dues[0]?.t ?? 0,
+    /** upad interest members have paid ahead (owed to them until used) */
+    advancePaise: adv[0]?.t ?? 0,
   };
 }

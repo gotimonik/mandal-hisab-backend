@@ -9,6 +9,7 @@ import type { OrgContext } from "@/lib/auth";
 import type { FundLoanPaymentDoc, UpadPaymentClaimDoc } from "@/types/models";
 import { dateOnly, idempotencyKey, money, optText } from "@/validators/common";
 import { listFundLoans, receiveFundLoanPayment } from "./fund-loan.service";
+import { aheadLimit, receiveMemberInterest } from "./upad-interest.service";
 import { lastOfMonth, monthOf } from "./monthly.service";
 import { notifyMember, notifyRoles } from "./notification.service";
 import { copy } from "./notification-copy";
@@ -71,15 +72,20 @@ export async function myPaymentOptions(ctx: OrgContext) {
   return {
     schemes: perScheme.map((x) => ({ _id: x._id, name: x.name, frequency: x.frequency, duePaise: x.due, months: x.months, remainingPaise: x.left, nextPaise: x.next ?? 0, nextLabel: x.nextLabel })),
     hapta: { duePaise: due?.due ?? 0, months: due?.months ?? 0, pendingPaise: pendingHapta?.t ?? 0 },
-    upads: loans.items.map((l) => ({ _id: l._id, number: l.number, interestDuePaise: l.interestDuePaise, outstandingPaise: l.outstandingPaise, monthlyRate: l.monthlyRate, unpaidMonths: l.unpaidMonths })),
+    upads: loans.items.map((l) => ({ _id: l._id, number: l.number, interestDuePaise: l.interestDuePaise, outstandingPaise: l.outstandingPaise, monthlyRate: l.monthlyRate, unpaidMonths: l.unpaidMonths, nextInterestPaise: l.nextInterestPaise })),
+    /** interest paid ahead, used first for the next interest due */
+    upadAdvancePaise: (await c.members.findOne({ _id: memberId }, { projection: { upadAdvancePaise: 1 } }))?.upadAdvancePaise ?? 0,
     methods: ctx.org.settings.paymentMethods,
   };
 }
 
 /* ------------------------------------------------------------------ upad payment claims */
 
+const loanIdsOf = (items: { loanId: ObjectId | null }[]) => items.map((i) => i.loanId).filter((x): x is ObjectId => !!x);
+
 export const UpadClaimSchema = z
   .object({
+    /** an upad's id, or "all": interest for all the member's upads at once */
     loanId: z.string(),
     interestAmount: money({ allowZero: true }).default(0),
     principalAmount: money({ allowZero: true }).default(0),
@@ -97,24 +103,40 @@ export async function submitUpadClaim(ctx: OrgContext, input: z.infer<typeof Upa
   const c = await cols();
   const prior = await c.upadPaymentClaims.findOne({ organizationId: ctx.orgId, idempotencyKey: input.idempotencyKey });
   if (prior) return { claim: prior, duplicate: true };
-  if (!ObjectId.isValid(input.loanId)) throw notFound("Upad");
+  const all = input.loanId === "all";
+  if (!all && !ObjectId.isValid(input.loanId)) throw notFound("Upad");
   const today = todayIn(ctx.org.settings.timezone);
   if (input.date > today) throw badRequest("The payment date can't be in the future");
+  const cur = ctx.org.settings.currency;
   const { items } = await listFundLoans(ctx, { status: "active" }, memberId);
-  const loan = items.find((l) => l._id.toHexString() === input.loanId);
-  if (!loan) throw notFound("Upad");
-  // what's already reported but not yet verified counts against what is due
-  const open = await c.upadPaymentClaims.find({ organizationId: ctx.orgId, loanId: loan._id, status: "pending" }).toArray();
-  const openInterest = open.reduce((s, x) => s + x.interestPaise, 0);
-  const openPrincipal = open.reduce((s, x) => s + x.principalPaise, 0);
-  if (input.interestAmount > loan.interestDuePaise - openInterest) throw badRequest(`Interest due on ${loan.number} is ${formatMoney(Math.max(0, loan.interestDuePaise - openInterest), ctx.org.settings.currency)}${openInterest ? " (after payments waiting for verification)" : ""}`);
-  if (input.principalAmount > loan.outstandingPaise - openPrincipal) throw badRequest(`Only ${formatMoney(Math.max(0, loan.outstandingPaise - openPrincipal), ctx.org.settings.currency)} of ${loan.number} is outstanding`);
+  // what's already reported but not yet verified counts against what is due; paying a little
+  // more is fine (kept as advance), up to a year of interest ahead
+  const open = await c.upadPaymentClaims.find({ organizationId: ctx.orgId, memberId, status: "pending" }).toArray();
+  let loanId: ObjectId | null = null;
+  if (all) {
+    if (items.length === 0) throw notFound("Upad");
+    if (input.principalAmount > 0) throw badRequest("To return part of an upad, choose that upad");
+    const due = items.reduce((s, l) => s + l.interestDuePaise, 0);
+    const advance = (await c.members.findOne({ _id: memberId }, { projection: { upadAdvancePaise: 1 } }))?.upadAdvancePaise ?? 0;
+    const max = Math.max(0, due - advance) + aheadLimit(items) - open.reduce((s, x) => s + x.interestPaise, 0);
+    if (input.interestAmount > max) throw badRequest(`That's more than the interest due plus a year ahead (${formatMoney(Math.max(0, max), cur)})`);
+  } else {
+    const loan = items.find((l) => l._id.toHexString() === input.loanId);
+    if (!loan) throw notFound("Upad");
+    loanId = loan._id;
+    const mine = open.filter((x) => x.loanId?.equals(loan._id));
+    const openInterest = mine.reduce((s, x) => s + x.interestPaise, 0);
+    const openPrincipal = mine.reduce((s, x) => s + x.principalPaise, 0);
+    const maxInterest = loan.interestDuePaise + aheadLimit([loan]) - openInterest;
+    if (input.interestAmount > maxInterest) throw badRequest(`Interest due on ${loan.number} is ${formatMoney(Math.max(0, loan.interestDuePaise - openInterest), cur)}${openInterest ? " (after payments waiting for verification)" : ""} — up to a year ahead can be paid`);
+    if (input.principalAmount > loan.outstandingPaise - openPrincipal) throw badRequest(`Only ${formatMoney(Math.max(0, loan.outstandingPaise - openPrincipal), cur)} of ${loan.number} is outstanding`);
+  }
   const now = new Date();
   const doc: UpadPaymentClaimDoc = {
     _id: new ObjectId(),
     organizationId: ctx.orgId,
     memberId,
-    loanId: loan._id,
+    loanId,
     interestPaise: input.interestAmount,
     principalPaise: input.principalAmount,
     date: input.date,
@@ -140,11 +162,12 @@ export async function submitUpadClaim(ctx: OrgContext, input: z.infer<typeof Upa
     throw e;
   }
   const member = await c.members.findOne({ _id: memberId }, { projection: { name: 1 } });
-  await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "upadClaim.submit", entityType: "upadPaymentClaim", entityId: doc._id, after: { loanId: loan._id, interestPaise: doc.interestPaise, principalPaise: doc.principalPaise } });
+  await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "upadClaim.submit", entityType: "upadPaymentClaim", entityId: doc._id, after: { loanId, interestPaise: doc.interestPaise, principalPaise: doc.principalPaise } });
+  const loanText = loanId ? (items.find((l) => l._id.equals(loanId))?.number ?? "") : items.map((l) => l.number).join(", ");
   await notifyRoles(ctx.orgId, ["admin", "manager"], {
     actorId: ctx.user._id,
     type: "upadClaim.new",
-    copy: copy("upadClaim.new", { member: member?.name ?? "A member", interestPaise: doc.interestPaise, principalPaise: doc.principalPaise, loan: loan.number, method: doc.method }, ctx.org.settings.currency),
+    copy: copy("upadClaim.new", { member: member?.name ?? "A member", interestPaise: doc.interestPaise, principalPaise: doc.principalPaise, loan: loanText, method: doc.method }, ctx.org.settings.currency),
     link: `/org/${ctx.orgId}/fund-loans`,
     dedupeKey: `upadclaim:${doc._id}`,
   });
@@ -155,8 +178,9 @@ export async function myUpadClaims(ctx: OrgContext) {
   const memberId = memberOf(ctx);
   const c = await cols();
   const items = await c.upadPaymentClaims.find({ organizationId: ctx.orgId, memberId }).sort({ createdAt: -1 }).limit(50).toArray();
-  const loans = await c.fundLoans.find({ _id: { $in: items.map((i) => i.loanId) } }, { projection: { number: 1 } }).toArray();
-  return items.map((i) => ({ ...i, loanNumber: loans.find((l) => l._id.equals(i.loanId))?.number ?? "" }));
+  const loans = await c.fundLoans.find({ _id: { $in: loanIdsOf(items) } }, { projection: { number: 1 } }).toArray();
+  // loanNumber "" = interest for all upads at once
+  return items.map((i) => ({ ...i, loanNumber: i.loanId ? (loans.find((l) => l._id.equals(i.loanId!))?.number ?? "") : "" }));
 }
 
 /**
@@ -165,9 +189,10 @@ export async function myUpadClaims(ctx: OrgContext) {
  * already used for another claim.
  */
 function findCoveringPayment(claim: UpadPaymentClaimDoc, payments: FundLoanPaymentDoc[], usedIds: Set<string>) {
+  if (!claim.loanId) return undefined; // "all upads": verify it to record the money
   return payments.find(
     (p) =>
-      p.loanId.equals(claim.loanId) &&
+      p.loanId.equals(claim.loanId!) &&
       p.status === "valid" &&
       p.createdAt >= claim.createdAt &&
       p.interestPaise >= claim.interestPaise &&
@@ -181,10 +206,10 @@ export async function listUpadClaims(ctx: OrgContext, status: "pending" | "all" 
   const filter: Record<string, unknown> = { organizationId: ctx.orgId };
   if (status !== "all") filter.status = status;
   const items = await c.upadPaymentClaims.find(filter).sort({ createdAt: -1 }).limit(200).toArray();
-  const pendingLoanIds = items.filter((i) => i.status === "pending").map((i) => i.loanId);
+  const pendingLoanIds = loanIdsOf(items.filter((i) => i.status === "pending"));
   const [members, loans, payments, used] = await Promise.all([
     c.members.find({ _id: { $in: items.map((i) => i.memberId) } }, { projection: { name: 1, membershipNumber: 1 } }).toArray(),
-    c.fundLoans.find({ _id: { $in: items.map((i) => i.loanId) } }, { projection: { number: 1, outstandingPaise: 1 } }).toArray(),
+    c.fundLoans.find({ _id: { $in: loanIdsOf(items) } }, { projection: { number: 1, outstandingPaise: 1 } }).toArray(),
     pendingLoanIds.length ? c.fundLoanPayments.find({ organizationId: ctx.orgId, loanId: { $in: pendingLoanIds }, status: "valid" }).sort({ createdAt: 1 }).toArray() : Promise.resolve([] as FundLoanPaymentDoc[]),
     pendingLoanIds.length ? c.upadPaymentClaims.find({ organizationId: ctx.orgId, loanId: { $in: pendingLoanIds }, paymentId: { $ne: null } }, { projection: { paymentId: 1 } }).toArray() : Promise.resolve([]),
   ]);
@@ -194,7 +219,7 @@ export async function listUpadClaims(ctx: OrgContext, status: "pending" | "all" 
     return {
       ...i,
       member: members.find((m) => m._id.equals(i.memberId)) ?? null,
-      loanNumber: loans.find((l) => l._id.equals(i.loanId))?.number ?? "",
+      loanNumber: i.loanId ? (loans.find((l) => l._id.equals(i.loanId!))?.number ?? "") : "",
       /** the admin already recorded this money with "Receive" — settle instead of verifying again */
       alreadyRecorded: cover ? { paymentId: cover._id, date: cover.date, interestPaise: cover.interestPaise, principalPaise: cover.principalPaise, receiptId: cover.receiptId } : null,
     };
@@ -210,6 +235,7 @@ export async function settleUpadClaim(ctx: OrgContext, id: ObjectId, paymentIdHi
   const claim = await c.upadPaymentClaims.findOne({ _id: id, organizationId: ctx.orgId });
   if (!claim) throw notFound("Payment");
   if (claim.status !== "pending") throw conflict(`This payment is already ${claim.status}`);
+  if (!claim.loanId) throw badRequest("Verify it to record the money, or reject it.");
   const [payments, used] = await Promise.all([
     c.fundLoanPayments.find({ organizationId: ctx.orgId, loanId: claim.loanId, status: "valid", ...(paymentIdHint ? { _id: paymentIdHint } : {}) }).sort({ createdAt: 1 }).toArray(),
     c.upadPaymentClaims.find({ organizationId: ctx.orgId, loanId: claim.loanId, paymentId: { $ne: null } }, { projection: { paymentId: 1 } }).toArray(),
@@ -263,16 +289,20 @@ export async function verifyUpadClaim(ctx: OrgContext, id: ObjectId, input: z.in
   const claimed = await c.upadPaymentClaims.updateOne({ _id: id, status: "pending" }, { $set: { status: "verified", decidedBy: ctx.user._id, decidedAt: new Date(), updatedAt: new Date() } });
   if (claimed.modifiedCount !== 1) throw conflict("This payment was just changed — refresh and try again");
   try {
-    const { payment } = await receiveFundLoanPayment(ctx, claim.loanId, {
-      interestAmount: claim.interestPaise,
-      principalAmount: claim.principalPaise,
-      date: claim.date,
-      note: [`Reported by member`, claim.notes].filter(Boolean).join(": "),
-      accountId: input.accountId,
-      method: claim.method,
-      reference: claim.reference,
-      idempotencyKey: `upadclaim:${id.toHexString()}`,
-    });
+    const note = [`Reported by member`, claim.notes].filter(Boolean).join(": ");
+    const { payment } = claim.loanId
+      ? await receiveFundLoanPayment(ctx, claim.loanId, {
+          interestAmount: claim.interestPaise,
+          principalAmount: claim.principalPaise,
+          date: claim.date,
+          note,
+          accountId: input.accountId,
+          method: claim.method,
+          reference: claim.reference,
+          idempotencyKey: `upadclaim:${id.toHexString()}`,
+        })
+      : // interest for all the member's upads at once (extra kept as advance)
+        await receiveMemberInterest(ctx, claim.memberId, { amount: claim.interestPaise, date: claim.date, note, accountId: input.accountId, method: claim.method, reference: claim.reference, idempotencyKey: `upadclaim:${id.toHexString()}` });
     await c.upadPaymentClaims.updateOne({ _id: id }, { $set: { paymentId: payment._id, updatedAt: new Date() } });
     await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "upadClaim.verify", entityType: "upadPaymentClaim", entityId: id, after: { paymentId: payment._id } });
     await notifyMember(ctx.orgId, claim.memberId, { actorId: ctx.user._id, type: "upadClaim.verified", copy: copy("upadClaim.verified", { amountPaise: claim.interestPaise + claim.principalPaise }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/receipts/${payment.receiptId}`, dedupeKey: `upadclaim-ok:${id}` });

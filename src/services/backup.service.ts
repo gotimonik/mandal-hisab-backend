@@ -53,6 +53,7 @@ export const ORG_COLLECTIONS = [
   "upadRequests",
   "upadPaymentClaims",
   "meetings",
+  "upadInterestPayments",
 ] as const satisfies readonly (keyof Collections)[];
 
 /** Kept out on purpose (or saved another way): see the comment at the top. */

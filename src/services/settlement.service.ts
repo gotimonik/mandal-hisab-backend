@@ -145,6 +145,7 @@ export async function settlementPreview(ctx: OrgContext) {
   if (pendingExpenses) blockers.push({ key: "expenses", label: "Expenses waiting for approval", count: pendingExpenses, link: `${base}/expenses?status=pending` });
   if (unpaidHapta[0]?.amt) blockers.push({ key: "hapta", label: "Unpaid hapta (collect it, or waive it here)", amountPaise: unpaidHapta[0].amt, count: unpaidHapta[0].n, link: `${base}/monthly?show=due` });
   if (fl.interestDuePaise > 0) blockers.push({ key: "upadInterest", label: "Upad interest still due — collect it first", amountPaise: fl.interestDuePaise, link: `${base}/fund-loans` });
+  if (fl.advancePaise > 0) blockers.push({ key: "upadAdvance", label: "Upad interest paid in advance — use it or return it to the members first", amountPaise: fl.advancePaise, link: `${base}/fund-loans` });
   if (emiLoans) blockers.push({ key: "emiLoans", label: "EMI loans still open", count: emiLoans, link: `${base}/loans` });
   for (const m of members.filter((x) => x.status === "active" && x.joining?.status === "due")) {
     blockers.push({ key: `joining:${m._id}`, label: `${m.name} hasn't paid the joining amount — collect it or waive it`, link: `${base}/members/${m._id}` });

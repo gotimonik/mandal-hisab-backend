@@ -82,7 +82,7 @@ describe("loans from the Mandal fund", () => {
   it("paying ₹300 shares it among the members — the fund becomes ₹5,300", async () => {
     const tooMuch = await pay(o, loanId, { interestAmount: "100000", date: "2026-08-15" }); // more than all interest due so far
     expect(tooMuch.status).toBe(400);
-    expect(tooMuch.error?.message).toMatch(/interest is due/);
+    expect(tooMuch.error?.message).toMatch(/more than the interest due plus a year ahead/); // a little extra is kept as advance (upad-advance.test.ts)
     await ok(pay(o, loanId, { interestAmount: "300", date: "2026-08-15" }));
     for (const id of m) expect(await balance(o, id)).toBe(106_000); // ₹60 each (equal savings)
     const d = await dash(o);
@@ -326,11 +326,11 @@ describe("'I have paid' with a purpose", () => {
     const opts = await ok(api("GET", `/orgs/${o.orgId}/me/payment-options`, { token: mem.token }));
     const due = opts.upads[0].interestDuePaise as number;
     const claim = (body: Record<string, unknown>) => api("POST", `/orgs/${o.orgId}/me/upad-payments`, { token: mem.token, body: { loanId, date: today(), method: "cash", idempotencyKey: uniq("uc"), ...body } });
-    expect((await claim({ interestAmount: String(due / 100 + 1) })).status).toBe(400); // more than due
+    expect((await claim({ interestAmount: String(due / 100 + 1201) })).status).toBe(400); // more than due + a year ahead (₹100 × 12)
     expect((await claim({ principalAmount: "1001" })).status).toBe(400); // more than outstanding
     const c1 = await ok(claim({ interestAmount: String(due / 100), principalAmount: "200", reference: "UPI123" }));
     expect(c1.claim.status).toBe("pending");
-    expect((await claim({ interestAmount: "1" })).status).toBe(400); // interest already reported, waiting for verification
+    expect((await claim({ interestAmount: "1201" })).status).toBe(400); // the interest already reported (waiting for verification) counts against what can be paid
     // nothing changes until it is verified
     expect((await ok(api("GET", `/orgs/${o.orgId}/fund-loans/${loanId}`, { token: o.admin.token }))).loan.outstandingPaise).toBe(100_000);
     expect((await api("POST", `/orgs/${o.orgId}/upad-payments/${c1.claim._id}/verify`, { token: mem.token, body: {} })).status).toBe(403);

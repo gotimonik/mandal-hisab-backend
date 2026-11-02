@@ -35,6 +35,7 @@ import type {
   UpadRequestDoc,
   UpadPaymentClaimDoc,
   MeetingDoc,
+  UpadInterestPaymentDoc,
 } from "@/types/models";
 
 export interface Collections {
@@ -72,6 +73,7 @@ export interface Collections {
   upadRequests: Collection<UpadRequestDoc>;
   upadPaymentClaims: Collection<UpadPaymentClaimDoc>;
   meetings: Collection<MeetingDoc>;
+  upadInterestPayments: Collection<UpadInterestPaymentDoc>;
 }
 
 /** Every collection (exported for the backup completeness test). */
@@ -110,6 +112,7 @@ export const COLLECTION_NAMES: (keyof Collections)[] = [
   "upadRequests",
   "upadPaymentClaims",
   "meetings",
+  "upadInterestPayments",
 ];
 
 export function collectionsFor(db: Db): Collections {
@@ -246,6 +249,9 @@ async function createIndexes() {
     c.upadPaymentClaims.createIndex({ organizationId: 1, memberId: 1, createdAt: -1 }),
     c.meetings.createIndex({ organizationId: 1, idempotencyKey: 1 }, { unique: true }),
     c.meetings.createIndex({ organizationId: 1, date: 1, time: 1 }),
+    c.upadInterestPayments.createIndex({ organizationId: 1, idempotencyKey: 1 }, { unique: true }),
+    c.upadInterestPayments.createIndex({ organizationId: 1, memberId: 1, createdAt: -1 }),
+    c.fundLoanPayments.createIndex({ organizationId: 1, groupId: 1 }, { partialFilterExpression: { groupId: { $type: "objectId" } } }),
     c.haptaSchemes.createIndex(
       { organizationId: 1, isPrimary: 1 },
       { unique: true, partialFilterExpression: { isPrimary: true } },
