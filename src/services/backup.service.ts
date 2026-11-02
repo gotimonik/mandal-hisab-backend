@@ -115,9 +115,12 @@ export async function backupStatus(ctx: OrgContext) {
   const c = await cols();
   const last = await c.auditLogs.findOne({ organizationId: ctx.orgId, action: "organization.backup" }, { sort: { createdAt: -1 } });
   const by = last?.actorId ? await c.users.findOne({ _id: last.actorId }, { projection: { name: 1 } }) : null;
+  // money recorded since then (hapta, upad, cash book …): the backup no longer has the latest
+  const changed = await c.financialTransactions.findOne({ organizationId: ctx.orgId, ...(last ? { createdAt: { $gt: last.createdAt } } : {}) }, { projection: { _id: 1 } });
+  const daysSince = last ? Math.floor((Date.now() - last.createdAt.getTime()) / 86_400_000) : null;
   // remind the admin when there's none, or it's more than a month old
-  const due = !last || Date.now() - last.createdAt.getTime() > 30 * 86_400_000;
-  return { lastBackupAt: last?.createdAt ?? null, lastBackupBy: by?.name ?? null, due };
+  const due = daysSince === null || daysSince > 30;
+  return { lastBackupAt: last?.createdAt ?? null, lastBackupBy: by?.name ?? null, due, daysSince, changedSinceBackup: !!changed };
 }
 
 /* ------------------------------------------------------------------ restore (platform operator) */

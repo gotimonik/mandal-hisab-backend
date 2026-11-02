@@ -149,7 +149,15 @@ describe("Mandal backup", () => {
 
   it("only admins can see when the last backup was taken", async () => {
     const o = await setupOrg("Status Mandal");
-    expect(await ok(api("GET", `/orgs/${o.orgId}/backup/status`, { token: o.admin.token }))).toEqual({ lastBackupAt: null, lastBackupBy: null, due: true });
+    expect(await ok(api("GET", `/orgs/${o.orgId}/backup/status`, { token: o.admin.token }))).toEqual({ lastBackupAt: null, lastBackupBy: null, due: true, daysSince: null, changedSinceBackup: false });
+    // money comes in → after a backup the reminder clears; new money since → "changed" again
+    await ok(api("POST", `/orgs/${o.orgId}/cashbook/entries`, { token: o.admin.token, body: { direction: "in", amount: "500", date: today(), description: "Donation", idempotencyKey: uniq("ce") } }));
+    expect(await ok(api("GET", `/orgs/${o.orgId}/backup/status`, { token: o.admin.token }))).toMatchObject({ due: true, changedSinceBackup: true });
+    await download(o.orgId, o.admin.token);
+    expect(await ok(api("GET", `/orgs/${o.orgId}/backup/status`, { token: o.admin.token }))).toMatchObject({ due: false, daysSince: 0, changedSinceBackup: false });
+    await new Promise((r) => setTimeout(r, 5));
+    await ok(api("POST", `/orgs/${o.orgId}/cashbook/entries`, { token: o.admin.token, body: { direction: "in", amount: "100", date: today(), description: "More", idempotencyKey: uniq("ce") } }));
+    expect(await ok(api("GET", `/orgs/${o.orgId}/backup/status`, { token: o.admin.token }))).toMatchObject({ due: false, changedSinceBackup: true });
     const m = await registerAndLogin("Plain member");
     expect((await api("GET", `/orgs/${o.orgId}/backup/status`, { token: m.token })).status).toBe(404);
   });
