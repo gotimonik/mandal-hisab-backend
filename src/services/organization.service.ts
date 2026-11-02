@@ -1,3 +1,4 @@
+import { VIEW_ONLY_PERMISSIONS } from "@/lib/permissions";
 import { CURRENCY_CODES, DEFAULT_CURRENCY } from "@/lib/currency";
 import { ObjectId } from "mongodb";
 import { z } from "zod";
@@ -457,7 +458,20 @@ export async function requestToJoin(auth: AuthContext, input: z.infer<typeof Joi
 }
 
 export async function getOrganization(ctx: OrgContext) {
-  return { ...publicOrg(ctx.org), myRole: ctx.role, myPermissions: [...ctx.permissions], myMemberId: ctx.membership.memberId ?? null };
+  if (ctx.platformView) {
+    await logPlatformView(ctx);
+    // the screens show only what can be read; the API refuses changes regardless
+    return { ...publicOrg(ctx.org), myRole: ctx.role, myPermissions: VIEW_ONLY_PERMISSIONS, myMemberId: null, platformView: true };
+  }
+  return { ...publicOrg(ctx.org), myRole: ctx.role, myPermissions: [...ctx.permissions], myMemberId: ctx.membership.memberId ?? null, platformView: false };
+}
+
+/** A platform admin opened this Mandal: one audit entry per admin per Mandal per day. */
+async function logPlatformView(ctx: OrgContext) {
+  const c = await cols();
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const seen = await c.auditLogs.findOne({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "platform.organization.view", createdAt: { $gte: since } }, { projection: { _id: 1 } });
+  if (!seen) await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "platform.organization.view", entityType: "organization", entityId: ctx.orgId });
 }
 
 export async function updateOrganization(ctx: OrgContext, input: z.infer<typeof UpdateOrgSchema>) {

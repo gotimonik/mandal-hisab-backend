@@ -68,8 +68,9 @@ describe("organization registration and approval", () => {
     await ok(api("PATCH", `/platform/organizations/${org.id}`, { token: pa.token, body: { action: "approve" } }));
     await ok(api("POST", `/orgs/${org.id}/members`, { token: admin.token, body: { name: "Ramesh" } }));
 
-    // platform admin has NO implicit access to the org's private data
-    expect((await api("GET", `/orgs/${org.id}/members`, { token: pa.token })).status).toBe(404);
+    // a platform admin may read any Mandal but never change it (tests/integration/platform-view.test.ts)
+    expect((await api("GET", `/orgs/${org.id}/members`, { token: pa.token })).status).toBe(200);
+    expect((await api("POST", `/orgs/${org.id}/members`, { token: pa.token, body: { name: "Not allowed" } })).status).toBe(403);
 
     // suspension blocks everything for org users
     await ok(api("PATCH", `/platform/organizations/${org.id}`, { token: pa.token, body: { action: "suspend", reason: "Compliance review" } }));

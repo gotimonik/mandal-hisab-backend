@@ -38,6 +38,25 @@ export const PERMISSIONS = [
 
 export type Permission = (typeof PERMISSIONS)[number];
 
+/**
+ * What the screens show to a platform admin looking at a Mandal they don't belong to: everything
+ * there is to read, nothing that changes data (the API refuses every change for them anyway).
+ */
+export const VIEW_ONLY_PERMISSIONS: Permission[] = [
+  "org.view",
+  "members.view",
+  "schemes.view",
+  "installments.view",
+  "payments.view",
+  "expenses.view",
+  "accounts.view",
+  "transactions.view",
+  "loans.view",
+  "reports.view",
+  "reports.sensitive",
+  "audit.view",
+];
+
 const MANAGER_BASE: Permission[] = [
   "org.view",
   "members.view",

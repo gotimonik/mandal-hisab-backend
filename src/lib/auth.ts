@@ -17,6 +17,8 @@ export interface OrgContext extends AuthContext {
   membership: OrganizationMembershipDoc;
   role: OrgRole;
   permissions: Set<Permission>;
+  /** A platform admin looking at a Mandal they aren't a member of: read-only. */
+  platformView: boolean;
   can(p: Permission): boolean;
   require(p: Permission): void;
 }
@@ -57,11 +59,15 @@ export interface OrgAccessOptions {
   /** Operation writes data; requires the organization to be active (or pending if allowPending). */
   write?: boolean;
   allowPending?: boolean;
+  /** HTTP method of the request (set by the router): platform admins may only read. */
+  method?: string;
 }
 
 /**
  * Tenant guard. Loads the org and the caller's ACTIVE membership in it and checks
- * the permission. Platform super-admins get NO implicit access to organization data.
+ * the permission. A platform admin who isn't a member may READ any Mandal (support and
+ * oversight) — every change is refused, and each visit is written to the audit log
+ * (organization.service → getOrganization).
  */
 export async function requireOrgAccess(
   auth: AuthContext,
@@ -75,6 +81,7 @@ export async function requireOrgAccess(
     c.organizations.findOne({ _id: orgId }),
     c.organizationMemberships.findOne({ organizationId: orgId, userId: auth.user._id, status: "active" }),
   ]);
+  if (org && !membership && auth.user.isPlatformAdmin) return platformViewContext(auth, org, opts);
   // Same error for "doesn't exist" and "not a member" so org ids can't be probed.
   if (!org || !membership) throw notFound("Organization");
   withSettingsDefaults(org);
@@ -99,6 +106,45 @@ export async function requireOrgAccess(
     membership,
     role: membership.role,
     permissions,
+    platformView: false,
+    can: (p) => permissions.has(p),
+    require: (p) => {
+      if (!permissions.has(p)) throw forbidden();
+    },
+  };
+}
+
+const READ_METHODS = new Set(["GET", "HEAD"]);
+
+/**
+ * A platform admin reading a Mandal they don't belong to. They see what an admin sees, but
+ * nothing can be changed: any write is refused here, before a service runs. Suspended Mandals
+ * can be looked at too (that's often why).
+ */
+function platformViewContext(auth: AuthContext, org: OrganizationDoc, opts: OrgAccessOptions): OrgContext {
+  if (opts.write || !READ_METHODS.has((opts.method ?? "GET").toUpperCase())) {
+    throw forbidden("Platform admins can only view this Mandal. Ask its admin to make changes.");
+  }
+  withSettingsDefaults(org);
+  const permissions = permissionsFor("admin", org.settings.managerPermissions);
+  const membership: OrganizationMembershipDoc = {
+    _id: new ObjectId("000000000000000000000000"),
+    organizationId: org._id,
+    userId: auth.user._id,
+    role: "admin",
+    status: "active",
+    memberId: null,
+    createdAt: org.createdAt,
+    updatedAt: org.createdAt,
+  };
+  return {
+    ...auth,
+    org,
+    orgId: org._id,
+    membership,
+    role: "admin",
+    permissions,
+    platformView: true,
     can: (p) => permissions.has(p),
     require: (p) => {
       if (!permissions.has(p)) throw forbidden();

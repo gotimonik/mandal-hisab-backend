@@ -168,7 +168,7 @@ function buildRequest(raw: NextRequest, method: Method, params: Record<string, s
     },
     async org(permission, opts) {
       const a = await req.auth();
-      return requireOrgAccess(a, params.orgId, permission, opts);
+      return requireOrgAccess(a, params.orgId, permission, { ...opts, method });
     },
   };
   return req;
