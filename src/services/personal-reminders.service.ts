@@ -8,7 +8,7 @@ import type { PersonalReminderDoc, ReminderRepeat } from "@/types/models";
 import { dateOnly, money, objectId, optText, phone } from "@/validators/common";
 import { localize, notify } from "./notification.service";
 import { copy, isLang, type Lang } from "./notification-copy";
-import { createEntry, ensureSetup } from "./personal.service";
+import { createEntry, ensureSetup, personalDefaults } from "./personal.service";
 
 /**
  * Personal Hisab reminders: "pay house rent to the owner on the 5th at 10 am, remind me a day
@@ -170,7 +170,7 @@ export async function markPaid(auth: AuthContext, id: ObjectId, input: z.infer<t
     const categoryId = input.categoryId ?? r.categoryId;
     if (!amount) throw badRequest(receive ? "Enter the amount received" : "Enter the amount paid");
     if (!categoryId) throw badRequest("Choose a category");
-    const walletId = input.walletId ?? r.walletId ?? (await c.personalWallets.findOne({ userId, isArchived: false }, { sort: { createdAt: 1, _id: 1 } }))?._id;
+    const walletId = input.walletId ?? r.walletId ?? (await personalDefaults(userId)).walletId ?? (await c.personalWallets.findOne({ userId, isArchived: false }, { sort: { createdAt: 1, _id: 1 } }))?._id;
     if (!walletId) throw badRequest("Add a wallet first");
     // one entry per due date, even if "Paid" is tapped twice
     const note = receive && r.person ? `${r.title} · ${r.person}` : r.title;

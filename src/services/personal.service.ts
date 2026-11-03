@@ -507,7 +507,8 @@ export async function listWallets(auth: AuthContext) {
   await syncMandal(auth).catch((e) => console.error("[mandal-sync]", e));
   const userId = own(auth);
   const book = await loadBook(userId);
-  return { wallets: await walletBalances(userId, book.wallets) };
+  const def = auth.user.personalDefaults?.walletId?.toHexString();
+  return { wallets: (await walletBalances(userId, book.wallets)).map((w) => ({ ...w, isDefault: !w.isArchived && w._id.toHexString() === def })) };
 }
 
 const walletName = z.string().trim().min(1, "Enter a name").max(60);
@@ -579,7 +580,9 @@ export async function deleteWallet(auth: AuthContext, id: ObjectId) {
 export async function listCategories(auth: AuthContext) {
   await ensureSetup(auth);
   const book = await loadBook(own(auth));
-  return { categories: book.categories.map(categoryOut), monthlyBudgetPaise: auth.user.personalMonthlyBudgetPaise ?? null, budgetAlerts: auth.user.personalBudgetAlerts !== false };
+  const d = auth.user.personalDefaults;
+  const defs = new Set([d?.expenseCategoryId?.toHexString(), d?.incomeCategoryId?.toHexString()].filter(Boolean));
+  return { categories: book.categories.map((k) => ({ ...categoryOut(k), isDefault: !k.isArchived && defs.has(k._id.toHexString()) })), monthlyBudgetPaise: auth.user.personalMonthlyBudgetPaise ?? null, budgetAlerts: auth.user.personalBudgetAlerts !== false };
 }
 
 const catName = z.string().trim().min(1, "Enter a name").max(60);
@@ -657,15 +660,55 @@ export async function deleteCategory(auth: AuthContext, id: ObjectId) {
   return { deleted: true, archived: false };
 }
 
-export const SettingsSchema = z.object({ monthlyBudget: budget.optional(), budgetAlerts: z.boolean().optional() });
+/** null clears it */
+const defaultId = objectId.nullable();
+export const SettingsSchema = z.object({
+  monthlyBudget: budget.optional(),
+  budgetAlerts: z.boolean().optional(),
+  defaultWalletId: defaultId.optional(),
+  defaultExpenseCategoryId: defaultId.optional(),
+  defaultIncomeCategoryId: defaultId.optional(),
+});
 
-/** The overall monthly spending limit (0 removes it) and whether budget alerts are pushed. */
+/** The defaults a new entry starts with (a hidden wallet / category no longer counts). */
+export async function personalDefaults(userId: ObjectId) {
+  const c = await cols();
+  const d = (await c.users.findOne({ _id: userId }, { projection: { personalDefaults: 1 } }))?.personalDefaults;
+  const [w, e, i] = await Promise.all([
+    d?.walletId ? c.personalWallets.findOne({ _id: d.walletId, userId, isArchived: false }) : null,
+    d?.expenseCategoryId ? c.personalCategories.findOne({ _id: d.expenseCategoryId, userId, isArchived: false }) : null,
+    d?.incomeCategoryId ? c.personalCategories.findOne({ _id: d.incomeCategoryId, userId, isArchived: false }) : null,
+  ]);
+  return { walletId: w?._id ?? null, expenseCategoryId: e?._id ?? null, incomeCategoryId: i?._id ?? null };
+}
+
+/** The overall monthly spending limit (0 removes it), whether budget alerts are pushed, and the default wallet / categories. */
 export async function updateSettings(auth: AuthContext, input: z.infer<typeof SettingsSchema>) {
   const c = await cols();
+  const userId = own(auth);
   const set: Record<string, unknown> = { updatedAt: new Date() };
   if (input.monthlyBudget !== undefined) set.personalMonthlyBudgetPaise = input.monthlyBudget || null;
   if (input.budgetAlerts !== undefined) set.personalBudgetAlerts = input.budgetAlerts;
-  await c.users.updateOne({ _id: own(auth) }, { $set: set });
-  const u = await c.users.findOne({ _id: own(auth) }, { projection: { personalMonthlyBudgetPaise: 1, personalBudgetAlerts: 1 } });
-  return { monthlyBudgetPaise: u?.personalMonthlyBudgetPaise ?? null, budgetAlerts: u?.personalBudgetAlerts !== false };
+  if (input.defaultWalletId) {
+    const w = await c.personalWallets.findOne({ _id: input.defaultWalletId, userId });
+    if (!w) throw notFound("Wallet");
+    if (w.isArchived) throw badRequest(`"${w.name}" is hidden. Show it again in Wallets to use it`);
+  }
+  for (const [field, kind] of [["defaultExpenseCategoryId", "expense"], ["defaultIncomeCategoryId", "income"]] as const) {
+    const id = input[field];
+    if (!id) continue;
+    const k = await c.personalCategories.findOne({ _id: id, userId });
+    if (!k) throw notFound("Category");
+    if (k.kind !== kind) throw badRequest(kind === "expense" ? "Choose a spending category" : "Choose an income category");
+    if (k.isArchived) throw badRequest(`"${k.name}" is hidden. Show it again in Categories to use it`);
+  }
+  if (input.defaultWalletId !== undefined) set["personalDefaults.walletId"] = input.defaultWalletId;
+  if (input.defaultExpenseCategoryId !== undefined) set["personalDefaults.expenseCategoryId"] = input.defaultExpenseCategoryId;
+  if (input.defaultIncomeCategoryId !== undefined) set["personalDefaults.incomeCategoryId"] = input.defaultIncomeCategoryId;
+  // personalDefaults may be null on older accounts: dotted $set can't go into null
+  if (Object.keys(set).some((k) => k.startsWith("personalDefaults."))) await c.users.updateOne({ _id: userId, personalDefaults: null }, { $set: { personalDefaults: {} } });
+  await c.users.updateOne({ _id: userId }, { $set: set });
+  const u = await c.users.findOne({ _id: userId }, { projection: { personalMonthlyBudgetPaise: 1, personalBudgetAlerts: 1 } });
+  const d = await personalDefaults(userId);
+  return { monthlyBudgetPaise: u?.personalMonthlyBudgetPaise ?? null, budgetAlerts: u?.personalBudgetAlerts !== false, defaults: d };
 }

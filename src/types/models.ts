@@ -41,6 +41,8 @@ export interface UserDoc extends Timestamps {
   personalMonthlyBudgetPaise?: number | null;
   /** Personal Hisab: push when spending reaches 80 % / goes over a budget (absent = on). */
   personalBudgetAlerts?: boolean;
+  /** Personal Hisab: what a new entry starts with, so it needn't be picked every time. */
+  personalDefaults?: { walletId?: Id | null; expenseCategoryId?: Id | null; incomeCategoryId?: Id | null } | null;
   /** Personal Hisab: copy the person's own Mandal money (hapta paid, upad, withdrawals …) into their book. */
   personalMandalSync?: { enabled: boolean; walletId?: Id | null; fromDate: Date } | null;
   personalMandalSyncedAt?: Date | null;
