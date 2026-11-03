@@ -280,6 +280,11 @@ async function createIndexes() {
     c.personalEntries.createIndex({ userId: 1, toWalletId: 1 }, { partialFilterExpression: { toWalletId: { $type: "objectId" } } }),
     c.personalEntries.createIndex({ userId: 1, categoryId: 1, date: -1 }),
     c.personalReminders.createIndex({ userId: 1, isActive: 1, remindAt: 1 }),
+    // one personal entry per Mandal transaction (and part)
+    c.personalEntries.createIndex(
+      { userId: 1, "source.transactionId": 1, "source.part": 1 },
+      { unique: true, partialFilterExpression: { "source.transactionId": { $type: "objectId" } }, name: "one_entry_per_mandal_txn" },
+    ),
     // the reminders job: what's due to be pushed now
     c.personalReminders.createIndex({ isActive: 1, remindAt: 1 }),
     c.notifications.createIndex({ userId: 1, organizationId: 1, readAt: 1 }),

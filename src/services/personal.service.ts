@@ -8,6 +8,7 @@ import type { AuthContext } from "@/lib/auth";
 import type { PersonalCategoryDoc, PersonalEntryDoc, PersonalWalletDoc } from "@/types/models";
 import { dateOnly, idempotencyKey, money, objectId, optText } from "@/validators/common";
 import { notify } from "./notification.service";
+import { syncMandal } from "./personal-mandal.service";
 import { copy } from "./notification-copy";
 
 /**
@@ -90,11 +91,19 @@ export async function ensureSetup(auth: AuthContext) {
 
 async function loadBook(userId: ObjectId) {
   const c = await cols();
-  const [wallets, categories] = await Promise.all([
+  const [wallets, categories, orgIds] = await Promise.all([
     c.personalWallets.find({ userId }).sort({ isArchived: 1, createdAt: 1, _id: 1 }).toArray(),
     c.personalCategories.find({ userId }).sort({ kind: 1, isArchived: 1, createdAt: 1, _id: 1 }).toArray(),
+    c.personalEntries.distinct("source.organizationId", { userId, "source.organizationId": { $exists: true } }),
   ]);
-  return { wallets, categories, walletById: new Map(wallets.map((w) => [w._id.toHexString(), w])), categoryById: new Map(categories.map((k) => [k._id.toHexString(), k])) };
+  const orgs = orgIds.length ? await c.organizations.find({ _id: { $in: orgIds as ObjectId[] } }, { projection: { name: 1 } }).toArray() : [];
+  return {
+    wallets,
+    categories,
+    walletById: new Map(wallets.map((w) => [w._id.toHexString(), w])),
+    categoryById: new Map(categories.map((k) => [k._id.toHexString(), k])),
+    orgName: new Map(orgs.map((o) => [o._id.toHexString(), o.name])),
+  };
 }
 type Book = Awaited<ReturnType<typeof loadBook>>;
 
@@ -114,6 +123,8 @@ function entryOut(e: PersonalEntryDoc, book: Book) {
     wallet: w ? walletOut(w) : null,
     toWallet: tw ? walletOut(tw) : null,
     category: k ? categoryOut(k) : null,
+    /** copied from a Mandal (read-only except wallet and note) */
+    mandal: e.source ? { organizationId: e.source.organizationId, name: book.orgName.get(e.source.organizationId.toHexString()) ?? null, kind: e.source.kind, part: e.source.part } : null,
     createdAt: e.createdAt,
   };
 }
@@ -125,7 +136,7 @@ async function walletBalances(userId: ObjectId, wallets: PersonalWalletDoc[]) {
     c.personalEntries
       .aggregate<{ _id: ObjectId; net: number; n: number }>([
         { $match: { userId } },
-        { $group: { _id: "$walletId", net: { $sum: { $cond: [{ $eq: ["$type", "income"] }, "$amountPaise", { $multiply: ["$amountPaise", -1] }] } }, n: { $sum: 1 } } },
+        { $group: { _id: "$walletId", net: { $sum: { $cond: [{ $in: ["$type", ["income", "in"]] }, "$amountPaise", { $multiply: ["$amountPaise", -1] }] } }, n: { $sum: 1 } } },
       ])
       .toArray(),
     c.personalEntries
@@ -254,11 +265,23 @@ export async function createEntry(auth: AuthContext, input: z.infer<typeof Entry
   return { entry: entryOut(doc, await loadBook(userId)), duplicate: false };
 }
 
-export async function updateEntry(auth: AuthContext, id: ObjectId, input: EntryInput) {
+/** An entry copied from a Mandal: only the wallet and the note are the person's to change. */
+export const MandalEntryUpdateSchema = z.object({ walletId: objectId, note: optText(300) });
+
+export async function updateEntry(auth: AuthContext, id: ObjectId, body: unknown) {
   const c = await cols();
   const userId = own(auth);
   const existing = await c.personalEntries.findOne({ _id: id, userId });
   if (!existing) throw notFound("Entry");
+  if (existing.source) {
+    const v = MandalEntryUpdateSchema.parse(body);
+    const w = await c.personalWallets.findOne({ _id: v.walletId, userId });
+    if (!w) throw notFound("Wallet");
+    if (w.isArchived && !w._id.equals(existing.walletId)) throw badRequest(`"${w.name}" is hidden. Show it again in Wallets to use it`);
+    await c.personalEntries.updateOne({ _id: id, userId }, v.note ? { $set: { walletId: w._id, note: v.note, updatedAt: new Date() } } : { $set: { walletId: w._id, updatedAt: new Date() }, $unset: { note: "" } });
+    return { entry: entryOut((await c.personalEntries.findOne({ _id: id, userId }))!, await loadBook(userId)) };
+  }
+  const input: EntryInput = EntryUpdateSchema.parse(body);
   const refs = await checkEntry(userId, input, existing);
   const set = { type: input.type, amountPaise: input.amount, date: input.date, ...refs, updatedAt: new Date() };
   await c.personalEntries.updateOne({ _id: id, userId }, input.note ? { $set: { ...set, note: input.note } } : { $set: set, $unset: { note: "" } });
@@ -269,6 +292,9 @@ export async function updateEntry(auth: AuthContext, id: ObjectId, input: EntryI
 
 export async function deleteEntry(auth: AuthContext, id: ObjectId) {
   const c = await cols();
+  const e = await c.personalEntries.findOne({ _id: id, userId: own(auth) }, { projection: { source: 1 } });
+  if (!e) throw notFound("Entry");
+  if (e.source) throw badRequest("This comes from your Mandal. It goes away by itself if the Mandal reverses it");
   const r = await c.personalEntries.deleteOne({ _id: id, userId: own(auth) });
   if (!r.deletedCount) throw notFound("Entry");
   return { ok: true };
@@ -277,7 +303,9 @@ export async function deleteEntry(auth: AuthContext, id: ObjectId) {
 export const EntryListQuery = z.object({
   from: dateOnly.optional(),
   to: dateOnly.optional(),
-  type: z.enum(["expense", "income", "transfer"]).optional().or(z.literal("").transform(() => undefined)),
+  type: z.enum(["expense", "income", "transfer", "in", "out"]).optional().or(z.literal("").transform(() => undefined)),
+  /** only entries copied from Mandals ("1") */
+  mandal: z.enum(["1"]).optional().or(z.literal("").transform(() => undefined)),
   walletId: objectId.optional().or(z.literal("").transform(() => undefined)),
   categoryId: objectId.optional().or(z.literal("").transform(() => undefined)),
   q: z.string().trim().max(100).optional(),
@@ -293,11 +321,13 @@ function entryFilter(userId: ObjectId, q: z.infer<typeof EntryListQuery>): Filte
   if (q.walletId) f.$or = [{ walletId: q.walletId }, { toWalletId: q.walletId }];
   if (q.categoryId) f.categoryId = q.categoryId;
   if (q.q) f.note = { $regex: escapeRegex(q.q), $options: "i" };
+  if (q.mandal) f["source.transactionId"] = { $exists: true };
   return f;
 }
 
 export async function listEntries(auth: AuthContext, q: z.infer<typeof EntryListQuery>) {
   await ensureSetup(auth);
+  await syncMandal(auth).catch((e) => console.error("[mandal-sync]", e));
   const c = await cols();
   const userId = own(auth);
   const filter = entryFilter(userId, q);
@@ -313,7 +343,7 @@ export async function listEntries(auth: AuthContext, q: z.infer<typeof EntryList
     total,
     page: q.page,
     pageSize: q.pageSize,
-    totals: { incomePaise: sum("income"), expensePaise: sum("expense"), transferPaise: sum("transfer"), netPaise: sum("income") - sum("expense") },
+    totals: { incomePaise: sum("income"), expensePaise: sum("expense"), transferPaise: sum("transfer"), inPaise: sum("in"), outPaise: sum("out"), netPaise: sum("income") - sum("expense") },
   };
 }
 
@@ -326,7 +356,10 @@ export async function entriesCsv(auth: AuthContext, q: z.infer<typeof EntryListQ
   const rows = items.map((e) => {
     const o = entryOut(e, book);
     const amt = paiseToRupeeString(e.amountPaise);
-    return [o.date, e.type, o.category?.name ?? "", o.wallet?.name ?? "", o.toWallet?.name ?? "", o.note ?? "", e.type === "income" ? amt : "", e.type === "expense" ? amt : ""];
+    const isIn = e.type === "income" || e.type === "in";
+    const isOut = e.type === "expense" || e.type === "out";
+    const what = o.mandal ? `${o.mandal.name ?? "Mandal"}: ${o.mandal.kind.replace(/_/g, " ")}${e.type === "in" || e.type === "out" ? " (not income/spending)" : ""}` : (o.category?.name ?? "");
+    return [o.date, e.type, what, o.wallet?.name ?? "", o.toWallet?.name ?? "", o.note ?? "", isIn ? amt : "", isOut ? amt : ""];
   });
   return { headers, rows };
 }
@@ -363,6 +396,7 @@ export const OverviewQuery = z.object({ month: z.string().regex(MONTH, "Month mu
 /** The home screen: balances, this month in/out, today, budgets, spending by category, recent entries. */
 export async function overview(auth: AuthContext, q: z.infer<typeof OverviewQuery>) {
   await ensureSetup(auth);
+  await syncMandal(auth).catch((e) => console.error("[mandal-sync]", e));
   const c = await cols();
   const userId = own(auth);
   const today = todayIn(TZ);
@@ -429,6 +463,7 @@ export const SummaryQuery = z.object({
 /** Any date range: totals, spending and income by category, and month by month. */
 export async function summary(auth: AuthContext, q: z.infer<typeof SummaryQuery>) {
   await ensureSetup(auth);
+  await syncMandal(auth).catch((e) => console.error("[mandal-sync]", e));
   if (q.from.getTime() > q.to.getTime()) throw badRequest("'From' must be before 'To'");
   const c = await cols();
   const userId = own(auth);
@@ -469,6 +504,7 @@ export async function summary(auth: AuthContext, q: z.infer<typeof SummaryQuery>
 
 export async function listWallets(auth: AuthContext) {
   await ensureSetup(auth);
+  await syncMandal(auth).catch((e) => console.error("[mandal-sync]", e));
   const userId = own(auth);
   const book = await loadBook(userId);
   return { wallets: await walletBalances(userId, book.wallets) };

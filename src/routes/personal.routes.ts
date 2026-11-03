@@ -4,6 +4,8 @@ import { parseObjectId } from "@/lib/auth";
 import { toCsv } from "@/lib/csv";
 import * as p from "@/services/personal.service";
 import * as rem from "@/services/personal-reminders.service";
+import * as ms from "@/services/personal-mandal.service";
+import { z } from "zod";
 
 /**
  * Personal Hisab: the signed-in person's own money book. User-level (req.auth()), never inside a
@@ -25,7 +27,7 @@ export function registerPersonalRoutes(r: Router) {
     return p.listEntries(auth, q);
   });
   r.post(`${base}/entries`, async (req) => p.createEntry(await req.auth(), await req.body(p.EntrySchema)));
-  r.patch(`${base}/entries/:id`, async (req) => p.updateEntry(await req.auth(), parseObjectId(req.params.id, "Entry"), await req.body(p.EntryUpdateSchema)));
+  r.patch(`${base}/entries/:id`, async (req) => p.updateEntry(await req.auth(), parseObjectId(req.params.id, "Entry"), await req.body(z.unknown())));
   r.delete(`${base}/entries/:id`, async (req) => p.deleteEntry(await req.auth(), parseObjectId(req.params.id, "Entry")));
 
   r.get(`${base}/wallets`, async (req) => p.listWallets(await req.auth()));
@@ -44,6 +46,9 @@ export function registerPersonalRoutes(r: Router) {
   r.delete(`${base}/reminders/:id`, async (req) => rem.deleteReminder(await req.auth(), parseObjectId(req.params.id, "Reminder")));
   r.post(`${base}/reminders/:id/paid`, async (req) => rem.markPaid(await req.auth(), parseObjectId(req.params.id, "Reminder"), await req.body(rem.PaidSchema)));
   r.post(`${base}/reminders/:id/skip`, async (req) => rem.skipReminder(await req.auth(), parseObjectId(req.params.id, "Reminder")));
+
+  r.get(`${base}/mandal-sync`, async (req) => ms.getMandalSync(await req.auth()));
+  r.patch(`${base}/mandal-sync`, async (req) => ms.updateMandalSync(await req.auth(), await req.body(ms.MandalSyncSchema)));
 
   r.patch(`${base}/settings`, async (req) => p.updateSettings(await req.auth(), await req.body(p.SettingsSchema)));
 }

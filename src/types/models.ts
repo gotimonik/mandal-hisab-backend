@@ -41,6 +41,9 @@ export interface UserDoc extends Timestamps {
   personalMonthlyBudgetPaise?: number | null;
   /** Personal Hisab: push when spending reaches 80 % / goes over a budget (absent = on). */
   personalBudgetAlerts?: boolean;
+  /** Personal Hisab: copy the person's own Mandal money (hapta paid, upad, withdrawals …) into their book. */
+  personalMandalSync?: { enabled: boolean; walletId?: Id | null; fromDate: Date } | null;
+  personalMandalSyncedAt?: Date | null;
 }
 
 export interface SessionDoc {
@@ -1040,7 +1043,12 @@ export interface PersonalCategoryDoc extends Timestamps {
   isArchived: boolean;
 }
 
-export type PersonalEntryType = "expense" | "income" | "transfer";
+/**
+ * expense / income count in spending / income. transfer moves between the person's wallets.
+ * in / out move money without being income or spending: upad received, savings withdrawn,
+ * hapta put into one's own Mandal savings, upad repaid (only made by the Mandal sync).
+ */
+export type PersonalEntryType = "expense" | "income" | "transfer" | "in" | "out";
 
 export interface PersonalEntryDoc extends Timestamps {
   _id: Id;
@@ -1056,6 +1064,15 @@ export interface PersonalEntryDoc extends Timestamps {
   categoryId?: Id | null;
   note?: string;
   idempotencyKey: string;
+  /** made by the Mandal sync from one of the Mandal's transactions (read-only except wallet and note) */
+  source?: {
+    organizationId: Id;
+    transactionId: Id;
+    /** the Mandal transaction type (hapta_collection, fund_loan_given …) */
+    kind: string;
+    /** "spend": the part that is real spending (interest, fees); "main": the rest */
+    part: "main" | "spend";
+  };
 }
 
 export type ReminderRepeat = "once" | "weekly" | "monthly" | "yearly";
