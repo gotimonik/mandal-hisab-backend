@@ -1,4 +1,5 @@
 import { runPersonalReminders } from "@/services/personal-reminders.service";
+import { cleanupOrphanBills } from "@/services/personal-bills.service";
 import { z } from "zod";
 import { csvResponse, type Router } from "@/lib/http";
 import { parseObjectId } from "@/lib/auth";
@@ -168,12 +169,17 @@ export function registerFinanceRoutes(r: Router) {
       console.error("[personal-reminders]", e);
       return { remindersSent: 0, failed: (e as Error).message };
     });
+    // Personal Hisab bills scanned but never saved with an entry
+    const personalBills = await cleanupOrphanBills().catch((e) => {
+      console.error("[personal-bills]", e);
+      return { billsRemoved: 0, failed: (e as Error).message };
+    });
     // then the nightly encrypted copy of the whole database (a failure here never hides the jobs' report)
     const serverBackup = await runServerBackup().catch((e) => {
       console.error("[server-backup]", e);
       return { skipped: true as const, reason: `Failed: ${(e as Error).message}` };
     });
-    return { ...jobs, personalReminders, serverBackup };
+    return { ...jobs, personalReminders, personalBills, serverBackup };
   });
   /**
    * Personal Hisab reminders: pushes go out at the time people picked, so call this every few

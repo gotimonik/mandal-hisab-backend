@@ -10,6 +10,7 @@ import { dateOnly, idempotencyKey, money, objectId, optText } from "@/validators
 import { notify } from "./notification.service";
 import { syncMandal } from "./personal-mandal.service";
 import { copy } from "./notification-copy";
+import { billRefOut, claimBill, releaseBill } from "./personal-bills.service";
 
 /**
  * Personal Hisab — a person's own money book (daily income, spending, wallets, budgets).
@@ -125,6 +126,7 @@ function entryOut(e: PersonalEntryDoc, book: Book) {
     category: k ? categoryOut(k) : null,
     /** copied from a Mandal (read-only except wallet and note) */
     mandal: e.source ? { organizationId: e.source.organizationId, name: book.orgName.get(e.source.organizationId.toHexString()) ?? null, kind: e.source.kind, part: e.source.part } : null,
+    bill: billRefOut(e.bill),
     createdAt: e.createdAt,
   };
 }
@@ -211,6 +213,8 @@ export const EntrySchema = z.object({
   toWalletId: objectId.optional().nullable(),
   categoryId: objectId.optional().nullable(),
   note: optText(300),
+  /** a scanned bill to keep with the entry (null on an update = remove it) */
+  billId: objectId.optional().nullable(),
   idempotencyKey,
 });
 export const EntryUpdateSchema = EntrySchema.omit({ idempotencyKey: true });
@@ -261,6 +265,16 @@ export async function createEntry(auth: AuthContext, input: z.infer<typeof Entry
     if (!again) throw e;
     return { entry: entryOut(again, await loadBook(userId)), duplicate: true };
   }
+  if (input.billId) {
+    try {
+      doc.bill = await claimBill(userId, input.billId, doc._id);
+    } catch (e) {
+      // the bill isn't theirs / is gone: don't leave a half-saved entry behind
+      await c.personalEntries.deleteOne({ _id: doc._id, userId });
+      throw e;
+    }
+    await c.personalEntries.updateOne({ _id: doc._id, userId }, { $set: { bill: doc.bill } });
+  }
   if (doc.type === "expense") await budgetAlerts(auth, doc.date, doc.categoryId).catch((e) => console.error("[budget-alerts]", e));
   return { entry: entryOut(doc, await loadBook(userId)), duplicate: false };
 }
@@ -283,8 +297,14 @@ export async function updateEntry(auth: AuthContext, id: ObjectId, body: unknown
   }
   const input: EntryInput = EntryUpdateSchema.parse(body);
   const refs = await checkEntry(userId, input, existing);
-  const set = { type: input.type, amountPaise: input.amount, date: input.date, ...refs, updatedAt: new Date() };
+  // the bill: undefined = keep, null = remove, another id = swap
+  const oldBill = existing.bill?.billId ?? null;
+  let bill = existing.bill ?? null;
+  if (input.billId === null) bill = null;
+  else if (input.billId && !(oldBill && oldBill.equals(input.billId))) bill = await claimBill(userId, input.billId, id);
+  const set = { type: input.type, amountPaise: input.amount, date: input.date, ...refs, bill, updatedAt: new Date() };
   await c.personalEntries.updateOne({ _id: id, userId }, input.note ? { $set: { ...set, note: input.note } } : { $set: set, $unset: { note: "" } });
+  if (oldBill && !(bill && bill.billId.equals(oldBill))) await releaseBill(userId, oldBill);
   const doc = await c.personalEntries.findOne({ _id: id, userId });
   if (doc!.type === "expense") await budgetAlerts(auth, doc!.date, doc!.categoryId).catch((e) => console.error("[budget-alerts]", e));
   return { entry: entryOut(doc!, await loadBook(userId)) };
@@ -292,11 +312,12 @@ export async function updateEntry(auth: AuthContext, id: ObjectId, body: unknown
 
 export async function deleteEntry(auth: AuthContext, id: ObjectId) {
   const c = await cols();
-  const e = await c.personalEntries.findOne({ _id: id, userId: own(auth) }, { projection: { source: 1 } });
+  const e = await c.personalEntries.findOne({ _id: id, userId: own(auth) }, { projection: { source: 1, bill: 1 } });
   if (!e) throw notFound("Entry");
   if (e.source) throw badRequest("This comes from your Mandal. It goes away by itself if the Mandal reverses it");
   const r = await c.personalEntries.deleteOne({ _id: id, userId: own(auth) });
   if (!r.deletedCount) throw notFound("Entry");
+  if (e.bill) await releaseBill(own(auth), e.bill.billId);
   return { ok: true };
 }
 

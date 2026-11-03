@@ -5,6 +5,8 @@ import { toCsv } from "@/lib/csv";
 import * as p from "@/services/personal.service";
 import * as rem from "@/services/personal-reminders.service";
 import * as ms from "@/services/personal-mandal.service";
+import * as bills from "@/services/personal-bills.service";
+import { BILL_MAX_BYTES, BILL_TOO_BIG, formFile } from "@/services/upload.service";
 import { z } from "zod";
 
 /**
@@ -29,6 +31,12 @@ export function registerPersonalRoutes(r: Router) {
   r.post(`${base}/entries`, async (req) => p.createEntry(await req.auth(), await req.body(p.EntrySchema)));
   r.patch(`${base}/entries/:id`, async (req) => p.updateEntry(await req.auth(), parseObjectId(req.params.id, "Entry"), await req.body(z.unknown())));
   r.delete(`${base}/entries/:id`, async (req) => p.deleteEntry(await req.auth(), parseObjectId(req.params.id, "Entry")));
+
+  // bills: scan (upload + read), the monthly count, the file itself, and removing an unsaved one
+  r.post(`${base}/bills`, async (req) => bills.scanBill(await req.auth(), await formFile(req, BILL_MAX_BYTES, BILL_TOO_BIG)));
+  r.get(`${base}/bills/usage`, async (req) => bills.billUsage(await req.auth()));
+  r.get(`${base}/bills/:id/file`, async (req) => bills.billFile(await req.auth(), parseObjectId(req.params.id, "Bill")));
+  r.delete(`${base}/bills/:id`, async (req) => bills.deleteBill(await req.auth(), parseObjectId(req.params.id, "Bill")));
 
   r.get(`${base}/wallets`, async (req) => p.listWallets(await req.auth()));
   r.post(`${base}/wallets`, async (req) => p.createWallet(await req.auth(), await req.body(p.WalletSchema)));

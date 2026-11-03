@@ -40,6 +40,7 @@ import type {
   PersonalCategoryDoc,
   PersonalEntryDoc,
   PersonalReminderDoc,
+  PersonalBillDoc,
 } from "@/types/models";
 
 export interface Collections {
@@ -83,6 +84,7 @@ export interface Collections {
   personalCategories: Collection<PersonalCategoryDoc>;
   personalEntries: Collection<PersonalEntryDoc>;
   personalReminders: Collection<PersonalReminderDoc>;
+  personalBills: Collection<PersonalBillDoc>;
 }
 
 /** Every collection (exported for the backup completeness test). */
@@ -126,6 +128,7 @@ export const COLLECTION_NAMES: (keyof Collections)[] = [
   "personalCategories",
   "personalEntries",
   "personalReminders",
+  "personalBills",
 ];
 
 export function collectionsFor(db: Db): Collections {
@@ -280,6 +283,9 @@ async function createIndexes() {
     c.personalEntries.createIndex({ userId: 1, toWalletId: 1 }, { partialFilterExpression: { toWalletId: { $type: "objectId" } } }),
     c.personalEntries.createIndex({ userId: 1, categoryId: 1, date: -1 }),
     c.personalReminders.createIndex({ userId: 1, isActive: 1, remindAt: 1 }),
+    c.personalBills.createIndex({ userId: 1, month: 1 }),
+    // the daily clean-up: scanned bills never saved with an entry
+    c.personalBills.createIndex({ entryId: 1, deletedAt: 1, createdAt: 1 }),
     // one personal entry per Mandal transaction (and part)
     c.personalEntries.createIndex(
       { userId: 1, "source.transactionId": 1, "source.part": 1 },

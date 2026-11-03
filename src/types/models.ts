@@ -1066,6 +1066,8 @@ export interface PersonalEntryDoc extends Timestamps {
   categoryId?: Id | null;
   note?: string;
   idempotencyKey: string;
+  /** the bill (photo or PDF) kept with this entry — see PersonalBillDoc */
+  bill?: PersonalBillRef | null;
   /** made by the Mandal sync from one of the Mandal's transactions (read-only except wallet and note) */
   source?: {
     organizationId: Id;
@@ -1075,6 +1077,49 @@ export interface PersonalEntryDoc extends Timestamps {
     /** "spend": the part that is real spending (interest, fees); "main": the rest */
     part: "main" | "spend";
   };
+}
+
+/** What an entry keeps about its bill (the file itself is only reachable through the API). */
+export interface PersonalBillRef {
+  billId: Id;
+  name: string;
+  contentType: string;
+  size: number;
+}
+
+/** What was read off a bill, offered to the person to check before saving. */
+export interface PersonalBillReading {
+  isBill: boolean;
+  amountPaise: number | null;
+  /** YYYY-MM-DD */
+  date: string | null;
+  merchant: string | null;
+  type: "expense" | "income";
+  categoryId: Id | null;
+  walletKind: "cash" | "upi" | "card" | "bank" | null;
+}
+
+/**
+ * Personal Hisab: a bill photo / PDF the person scanned (max 5 MB, a few a month). Stored in
+ * Vercel Blob under an unguessable path, never handed to the browser directly — the app fetches
+ * it through the API, which checks the owner. A bill never saved with an entry is removed by the
+ * daily job; a removed bill keeps its record (without the file) so the monthly count stays right.
+ */
+export interface PersonalBillDoc extends Timestamps {
+  _id: Id;
+  userId: Id;
+  /** India-time month it was scanned in (YYYY-MM) — what the monthly limit counts */
+  month: string;
+  /** null once the file has been deleted */
+  url: string | null;
+  name: string;
+  contentType: string;
+  size: number;
+  entryId: Id | null;
+  reading: PersonalBillReading | null;
+  /** the reading failed on our side (not the bill's fault): doesn't count towards the limit */
+  notCounted?: boolean;
+  deletedAt?: Date | null;
 }
 
 export type ReminderRepeat = "once" | "weekly" | "monthly" | "yearly";

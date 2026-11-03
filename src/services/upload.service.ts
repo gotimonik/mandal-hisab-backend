@@ -7,6 +7,7 @@ import { cols } from "@/lib/collections";
 import type { OrgContext } from "@/lib/auth";
 import type { ApiRequest } from "@/lib/http";
 import type { AttachmentRef } from "@/types/models";
+import type { ObjectId } from "mongodb";
 
 const ALLOWED: Record<string, { ext: string; magic: (b: Uint8Array) => boolean }> = {
   "application/pdf": { ext: "pdf", magic: (b) => b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46 },
@@ -18,6 +19,8 @@ const ALLOWED: Record<string, { ext: string; magic: (b: Uint8Array) => boolean }
 export interface StorageProvider {
   put(path: string, data: Uint8Array, contentType: string): Promise<string>;
   del(url: string): Promise<void>;
+  /** Read a stored file back (Personal Hisab bills are served through the API, never linked). */
+  get?(url: string): Promise<Uint8Array>;
 }
 
 class VercelBlobStorage implements StorageProvider {
@@ -28,6 +31,11 @@ class VercelBlobStorage implements StorageProvider {
   }
   async del(url: string) {
     await del(url, { token: this.token });
+  }
+  async get(url: string) {
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) throw new AppError("NOT_FOUND", "The file could not be found");
+    return new Uint8Array(await res.arrayBuffer());
   }
 }
 
@@ -90,6 +98,36 @@ export async function uploadAttachment(ctx: OrgContext, file: File): Promise<Att
   const path = `orgs/${ctx.orgId.toHexString()}/${new Date().toISOString().slice(0, 7)}/${randomBytes(16).toString("hex")}.${ext}`;
   const url = await s.put(path, bytes, file.type);
   return { url, name: safeName, contentType: file.type, size: file.size };
+}
+
+/* ------------------------------------------------------------------ Personal Hisab bills */
+
+export const BILL_MAX_BYTES = 5 * 1024 * 1024;
+export const BILL_TOO_BIG = "The bill must be 5 MB or smaller";
+
+/**
+ * Store one person's bill photo / PDF (max 5 MB) under an unguessable path of their own.
+ * Returns the bytes too, so the bill can be read without downloading it again.
+ */
+export async function storePersonalBill(userId: ObjectId, month: string, file: File) {
+  const s = requireStorage();
+  const { bytes, ext } = await readChecked(file, {
+    max: BILL_MAX_BYTES,
+    tooBig: BILL_TOO_BIG,
+    types: Object.keys(ALLOWED),
+    wrongType: "The bill must be a photo (JPEG, PNG, WEBP) or a PDF",
+  });
+  const name = file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80) || `bill.${ext}`;
+  const url = await s.put(`personal/${userId.toHexString()}/${month}/${randomBytes(16).toString("hex")}.${ext}`, bytes, file.type);
+  return { url, bytes, name, contentType: file.type, size: file.size };
+}
+
+export async function readStoredFile(url: string): Promise<Uint8Array> {
+  const s = requireStorage();
+  if (s.get) return s.get(url);
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) throw new AppError("NOT_FOUND", "The file could not be found");
+  return new Uint8Array(await res.arrayBuffer());
 }
 
 /* ------------------------------------------------------------------ Mandal logo */

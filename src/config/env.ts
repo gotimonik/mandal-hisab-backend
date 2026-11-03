@@ -32,6 +32,14 @@ const EnvSchema = z.object({
    */
   BACKUP_ENCRYPTION_KEY: z.string().min(32, "BACKUP_ENCRYPTION_KEY must be at least 32 characters").optional(),
   MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(5 * 1024 * 1024),
+  /**
+   * Personal Hisab bill scanning: an Anthropic API key, used to read the total, date and shop off
+   * a bill photo / PDF. Unset = bills are still kept with entries, but nothing is filled in.
+   */
+  ANTHROPIC_API_KEY: z.string().optional(),
+  BILL_READER_MODEL: z.string().default("claude-haiku-5-5"),
+  /** How many bills one person can scan in a calendar month (India time). */
+  PERSONAL_BILLS_PER_MONTH: z.coerce.number().int().min(0).max(1000).default(10),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
