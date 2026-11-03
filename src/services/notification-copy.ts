@@ -140,9 +140,59 @@ function meetingWhen(f: F): string {
 }
 const alsoThatDay = (f: F, label: string) => (f.has("events") ? `\n${label}: ${f.s("events")}` : "");
 
+
+/* ---- Personal Hisab */
+/** The starter categories' names in each language (renamed ones keep the person's own name). */
+const PH_CAT: Record<string, [string, string, string]> = {
+  food: ["Food & dining", "જમવાનું અને નાસ્તો", "खाना और नाश्ता"],
+  groceries: ["Groceries", "કરિયાણું", "किराना"],
+  transport: ["Travel & fuel", "મુસાફરી અને પેટ્રોલ", "सफ़र और पेट्रोल"],
+  bills: ["Bills & recharge", "બિલ અને રિચાર્જ", "बिल और रिचार्ज"],
+  home: ["Rent & home", "ભાડું અને ઘર", "किराया और घर"],
+  shopping: ["Shopping", "ખરીદી", "ख़रीदारी"],
+  health: ["Health & medicine", "દવા અને સારવાર", "दवा और इलाज"],
+  education: ["Education", "ભણતર", "पढ़ाई"],
+  family: ["Family & gifts", "પરિવાર અને ભેટ", "परिवार और तोहफ़े"],
+  festival: ["Festivals & religious", "તહેવાર અને ધાર્મિક", "त्योहार और धार्मिक"],
+  savings: ["Mandal hapta & savings", "મંડળનો હપ્તો અને બચત", "मंडल का हफ़्ता और बचत"],
+  loan: ["Loan & EMI", "લોન અને EMI", "लोन और EMI"],
+  other: ["Other expense", "બીજો ખર્ચ", "दूसरा ख़र्च"],
+};
+const phCat = (f: F) => {
+  const k = PH_CAT[f.s("catKey")];
+  return k ? k[f.lang === "gu" ? 1 : f.lang === "hi" ? 2 : 0] : f.s("name");
+};
+/** "House rent · ₹12,000" */
+const phWhat = (f: F) => (f.has("amountPaise") ? `${f.s("title")} · ${f.m("amountPaise")}` : f.s("title"));
+/** "today at 10:00 am" / "tomorrow at …" / "on 05 Nov 2026 at …" */
+function phWhen(f: F) {
+  const rel = f.s("when");
+  const at = f.time("time");
+  if (f.lang === "gu") return `${rel === "today" ? "આજે" : rel === "tomorrow" ? "કાલે" : `${f.d("dueDate")} ના રોજ`} ${at} વાગ્યે`;
+  if (f.lang === "hi") return `${rel === "today" ? "आज" : rel === "tomorrow" ? "कल" : `${f.d("dueDate")} को`} ${at} बजे`;
+  return `${rel === "today" ? "today" : rel === "tomorrow" ? "tomorrow" : `on ${f.d("dueDate")}`} at ${at}`;
+}
+
 /* ------------------------------------------------------------------ the copy */
 
 const COPY = {
+
+  /* ---- Personal Hisab (no Mandal) */
+  "personal.reminder": {
+    en: (f) => ({ title: `Reminder: ${f.s("title")}`, body: `${phWhat(f)} is due ${phWhen(f)}.${f.has("note") ? ` ${f.s("note")}` : ""}` }),
+    gu: (f) => ({ title: `યાદ અપાવું: ${f.s("title")}`, body: `${phWhat(f)} ${phWhen(f)} ભરવાનું છે.${f.has("note") ? ` ${f.s("note")}` : ""}` }),
+    hi: (f) => ({ title: `याद दिलाना: ${f.s("title")}`, body: `${phWhat(f)} ${phWhen(f)} चुकाना है।${f.has("note") ? ` ${f.s("note")}` : ""}` }),
+  },
+  "personal.budget.near": {
+    en: (f) => ({ title: f.has("overall") ? "80% of your monthly budget used" : `80% of your ${phCat(f)} budget used`, body: `You've spent ${f.m("spentPaise")} of ${f.m("budgetPaise")} in ${f.month("month")}.` }),
+    gu: (f) => ({ title: f.has("overall") ? "મહિનાના બજેટના 80% વપરાઈ ગયા" : `${phCat(f)} ના બજેટના 80% વપરાઈ ગયા`, body: `${f.month("month")} માં ${f.m("budgetPaise")} માંથી ${f.m("spentPaise")} ખર્ચાઈ ગયા છે.` }),
+    hi: (f) => ({ title: f.has("overall") ? "महीने के बजट का 80% इस्तेमाल हो गया" : `${phCat(f)} के बजट का 80% इस्तेमाल हो गया`, body: `${f.month("month")} में ${f.m("budgetPaise")} में से ${f.m("spentPaise")} ख़र्च हो गए हैं।` }),
+  },
+  "personal.budget.over": {
+    en: (f) => ({ title: f.has("overall") ? "Monthly budget exceeded" : `${phCat(f)} budget exceeded`, body: `You've spent ${f.m("spentPaise")} in ${f.month("month")} — ${f.m("overPaise")} over your ${f.m("budgetPaise")} budget.` }),
+    gu: (f) => ({ title: f.has("overall") ? "મહિનાનું બજેટ વટાઈ ગયું" : `${phCat(f)} નું બજેટ વટાઈ ગયું`, body: `${f.month("month")} માં ${f.m("spentPaise")} ખર્ચાયા — ${f.m("budgetPaise")} ના બજેટ કરતાં ${f.m("overPaise")} વધુ.` }),
+    hi: (f) => ({ title: f.has("overall") ? "महीने का बजट पार हो गया" : `${phCat(f)} का बजट पार हो गया`, body: `${f.month("month")} में ${f.m("spentPaise")} ख़र्च हुए — ${f.m("budgetPaise")} के बजट से ${f.m("overPaise")} ज़्यादा।` }),
+  },
   /* ---- payments */
   "payment.pending": {
     en: (f) => ({ title: "Payment to verify", body: `${f.m("amountPaise")} from ${f.s("payer")} is waiting for you to verify it. A receipt is issued once you do.` }),

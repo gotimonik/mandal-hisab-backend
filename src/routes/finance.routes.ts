@@ -1,3 +1,4 @@
+import { runPersonalReminders } from "@/services/personal-reminders.service";
 import { z } from "zod";
 import { csvResponse, type Router } from "@/lib/http";
 import { parseObjectId } from "@/lib/auth";
@@ -162,11 +163,26 @@ export function registerFinanceRoutes(r: Router) {
     const h = req.raw.headers.get("authorization") ?? "";
     if (!secret || !safeEqual(h, `Bearer ${secret}`)) throw unauthorized("Invalid cron secret");
     const jobs = await runDailyJobs();
+    // Personal Hisab reminders (normally sent by /cron/reminders every few minutes; this catches anything missed)
+    const personalReminders = await runPersonalReminders().catch((e) => {
+      console.error("[personal-reminders]", e);
+      return { remindersSent: 0, failed: (e as Error).message };
+    });
     // then the nightly encrypted copy of the whole database (a failure here never hides the jobs' report)
     const serverBackup = await runServerBackup().catch((e) => {
       console.error("[server-backup]", e);
       return { skipped: true as const, reason: `Failed: ${(e as Error).message}` };
     });
-    return { ...jobs, serverBackup };
+    return { ...jobs, personalReminders, serverBackup };
+  });
+  /**
+   * Personal Hisab reminders: pushes go out at the time people picked, so call this every few
+   * minutes (Vercel Cron on a paid plan, or any outside scheduler with the same CRON_SECRET).
+   */
+  r.get("/cron/reminders", async (req) => {
+    const secret = env().CRON_SECRET;
+    const h = req.raw.headers.get("authorization") ?? "";
+    if (!secret || !safeEqual(h, `Bearer ${secret}`)) throw unauthorized("Invalid cron secret");
+    return runPersonalReminders();
   });
 }

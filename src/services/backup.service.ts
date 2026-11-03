@@ -56,8 +56,12 @@ export const ORG_COLLECTIONS = [
   "upadInterestPayments",
 ] as const satisfies readonly (keyof Collections)[];
 
-/** Kept out on purpose (or saved another way): see the comment at the top. */
-export const NOT_IN_BACKUP: (keyof Collections)[] = ["sessions", "authTokens", "rateLimits", "pushDevices"];
+/**
+ * Kept out on purpose (or saved another way): see the comment at the top. Personal Hisab belongs
+ * to one person, not to the Mandal, so it never goes into a Mandal's backup (the nightly server
+ * backup still keeps it).
+ */
+export const NOT_IN_BACKUP: (keyof Collections)[] = ["sessions", "authTokens", "rateLimits", "pushDevices", "personalWallets", "personalCategories", "personalEntries", "personalReminders"];
 /** Saved separately: the Mandal itself, its numbering (receipt no. …) and its people. */
 export const SPECIAL_IN_BACKUP: (keyof Collections)[] = ["organizations", "counters", "users"];
 

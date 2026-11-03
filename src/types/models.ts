@@ -35,6 +35,12 @@ export interface UserDoc extends Timestamps {
   sessionVersion: number;
   /** Language picked in the app (English / ગુજરાતી / हिन्दी): notifications and pushes use it. */
   language?: "en" | "gu" | "hi";
+  /** Personal Hisab: when the starter wallet and categories were made (first visit). */
+  personalSetupAt?: Date;
+  /** Personal Hisab: overall monthly spending limit; null/absent = none. */
+  personalMonthlyBudgetPaise?: number | null;
+  /** Personal Hisab: push when spending reaches 80 % / goes over a budget (absent = on). */
+  personalBudgetAlerts?: boolean;
 }
 
 export interface SessionDoc {
@@ -773,7 +779,8 @@ export interface InterestCalculationDoc {
 
 export interface NotificationDoc {
   _id: Id;
-  organizationId: Id;
+  /** null: about the person's own Personal Hisab (a reminder, a budget alert) — no Mandal involved */
+  organizationId: Id | null;
   userId: Id;
   type: string;
   title: string;
@@ -993,4 +1000,92 @@ export interface UpadPaymentClaimDoc {
   idempotencyKey: string;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/* ================================================================ Personal Hisab
+ * A person's own money book: belongs to one user only (userId), never to a Mandal.
+ * No organizationId on purpose — no Mandal admin, manager or platform screen can reach it.
+ */
+
+export type PersonalWalletKind = "cash" | "bank" | "upi" | "card" | "other";
+
+/** Where the money sits: cash in hand, a bank account, a UPI wallet … */
+export interface PersonalWalletDoc extends Timestamps {
+  _id: Id;
+  userId: Id;
+  name: string;
+  kind: PersonalWalletKind;
+  /** set on the starter wallets so the app can show them in the person's language (cleared on rename) */
+  key?: string;
+  /** money already in it when the person started */
+  openingBalancePaise: number;
+  isArchived: boolean;
+}
+
+export type PersonalCategoryKind = "expense" | "income";
+
+export interface PersonalCategoryDoc extends Timestamps {
+  _id: Id;
+  userId: Id;
+  kind: PersonalCategoryKind;
+  name: string;
+  /** set on the starter categories so the app can show them in the person's language (cleared on rename) */
+  key?: string;
+  /** colour (lib/tones in the app) */
+  tone: string;
+  /** icon name from the app's icon set (e.g. "utensils"); absent = the app picks one from the name */
+  icon?: string;
+  /** monthly spending limit for an expense category; null/absent = no budget */
+  monthlyBudgetPaise?: number | null;
+  isArchived: boolean;
+}
+
+export type PersonalEntryType = "expense" | "income" | "transfer";
+
+export interface PersonalEntryDoc extends Timestamps {
+  _id: Id;
+  userId: Id;
+  type: PersonalEntryType;
+  amountPaise: number;
+  /** calendar day (UTC midnight) */
+  date: Date;
+  walletId: Id;
+  /** transfer only: the wallet the money went to */
+  toWalletId?: Id | null;
+  /** expense / income only */
+  categoryId?: Id | null;
+  note?: string;
+  idempotencyKey: string;
+}
+
+export type ReminderRepeat = "once" | "weekly" | "monthly" | "yearly";
+
+/**
+ * Personal Hisab: "pay house rent to the owner on the 5th" — a push just before the time the
+ * person picked. Belongs to one user only, like the rest of Personal Hisab.
+ */
+export interface PersonalReminderDoc extends Timestamps {
+  _id: Id;
+  userId: Id;
+  title: string;
+  note?: string;
+  /** what's usually paid; "Mark paid" records it as spending */
+  amountPaise?: number | null;
+  categoryId?: Id | null;
+  walletId?: Id | null;
+  repeat: ReminderRepeat;
+  /** the next time it's due: calendar day (UTC midnight) + "HH:mm" in India time */
+  dueDate: Date;
+  time: string;
+  /** the day of the month (or year) it repeats on, so 31 Jan → 28 Feb → 31 Mar */
+  anchorDay: number;
+  /** how long before the due time to push (0 = at the time) */
+  remindBeforeMinutes: number;
+  /** the moment the push goes out (UTC) */
+  remindAt: Date;
+  /** the dueDate the push was already sent for (null = not yet) */
+  notifiedFor?: Date | null;
+  /** false once a one-time reminder is paid (or the person turns it off) */
+  isActive: boolean;
+  lastPaidDate?: Date | null;
 }

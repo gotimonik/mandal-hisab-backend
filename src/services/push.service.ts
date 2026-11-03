@@ -100,7 +100,7 @@ export async function sendNotificationPush(notificationId: ObjectId) {
   const [badge, user, org] = await Promise.all([
     c.notifications.countDocuments({ userId: n.userId, readAt: null }),
     c.users.findOne({ _id: n.userId }, { projection: { language: 1 } }),
-    c.organizations.findOne({ _id: n.organizationId }, { projection: { name: 1 } }),
+    n.organizationId ? c.organizations.findOne({ _id: n.organizationId }, { projection: { name: 1 } }) : null,
   ]);
   // in their language, and say which Mandal it's about (people can be in several)
   const words = localize(n, isLang(user?.language) ? user.language : "en");
@@ -110,7 +110,7 @@ export async function sendNotificationPush(notificationId: ObjectId) {
     // one phone failing (network, Apple credentials …) never stops the others
     let r: SendResult;
     try {
-      r = await send({ token: d.token, title, body: words.body, badge, data: { link: n.link ?? "", notificationId: n._id.toHexString(), organizationId: n.organizationId.toHexString() } });
+      r = await send({ token: d.token, title, body: words.body, badge, data: { link: n.link ?? "", notificationId: n._id.toHexString(), organizationId: n.organizationId?.toHexString() ?? "" } });
     } catch (e) {
       console.error("[push] send failed", d.platform, (e as Error).message);
       r = "error";

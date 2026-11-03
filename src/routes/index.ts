@@ -4,6 +4,7 @@ import { registerPlatformRoutes } from "./platform.routes";
 import { registerOrgRoutes } from "./org.routes";
 import { registerFinanceRoutes } from "./finance.routes";
 import { registerSavingsRoutes } from "./savings.routes";
+import { registerPersonalRoutes } from "./personal.routes";
 
 export function buildRouter(): Router {
   const r = new Router();
@@ -12,5 +13,6 @@ export function buildRouter(): Router {
   registerOrgRoutes(r);
   registerFinanceRoutes(r);
   registerSavingsRoutes(r);
+  registerPersonalRoutes(r);
   return r;
 }

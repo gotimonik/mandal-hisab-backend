@@ -6,7 +6,8 @@ import { queuePush } from "./push.service";
 import { isLang, renderCopy, type Lang, type NotificationCopy } from "./notification-copy";
 
 export interface NotifyInput {
-  organizationId: ObjectId;
+  /** null: a Personal Hisab notification (no Mandal) */
+  organizationId: ObjectId | null;
   userId: ObjectId;
   type: string;
   /** The words, in the reader's language (preferred). */

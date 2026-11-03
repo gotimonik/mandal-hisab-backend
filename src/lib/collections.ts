@@ -36,6 +36,10 @@ import type {
   UpadPaymentClaimDoc,
   MeetingDoc,
   UpadInterestPaymentDoc,
+  PersonalWalletDoc,
+  PersonalCategoryDoc,
+  PersonalEntryDoc,
+  PersonalReminderDoc,
 } from "@/types/models";
 
 export interface Collections {
@@ -74,6 +78,11 @@ export interface Collections {
   upadPaymentClaims: Collection<UpadPaymentClaimDoc>;
   meetings: Collection<MeetingDoc>;
   upadInterestPayments: Collection<UpadInterestPaymentDoc>;
+  /* Personal Hisab — one person's own money, keyed by userId (never by a Mandal) */
+  personalWallets: Collection<PersonalWalletDoc>;
+  personalCategories: Collection<PersonalCategoryDoc>;
+  personalEntries: Collection<PersonalEntryDoc>;
+  personalReminders: Collection<PersonalReminderDoc>;
 }
 
 /** Every collection (exported for the backup completeness test). */
@@ -113,6 +122,10 @@ export const COLLECTION_NAMES: (keyof Collections)[] = [
   "upadPaymentClaims",
   "meetings",
   "upadInterestPayments",
+  "personalWallets",
+  "personalCategories",
+  "personalEntries",
+  "personalReminders",
 ];
 
 export function collectionsFor(db: Db): Collections {
@@ -257,5 +270,18 @@ async function createIndexes() {
       { unique: true, partialFilterExpression: { isPrimary: true } },
     ),
     c.auditLogs.createIndex({ organizationId: 1, entityType: 1, entityId: 1 }),
+
+    // Personal Hisab: everything is looked up by the owner first
+    c.personalWallets.createIndex({ userId: 1, name: 1 }, { unique: true, collation: { locale: "en", strength: 2 } }),
+    c.personalCategories.createIndex({ userId: 1, kind: 1, name: 1 }, { unique: true, collation: { locale: "en", strength: 2 } }),
+    c.personalEntries.createIndex({ userId: 1, idempotencyKey: 1 }, { unique: true }),
+    c.personalEntries.createIndex({ userId: 1, date: -1, _id: -1 }),
+    c.personalEntries.createIndex({ userId: 1, walletId: 1 }),
+    c.personalEntries.createIndex({ userId: 1, toWalletId: 1 }, { partialFilterExpression: { toWalletId: { $type: "objectId" } } }),
+    c.personalEntries.createIndex({ userId: 1, categoryId: 1, date: -1 }),
+    c.personalReminders.createIndex({ userId: 1, isActive: 1, remindAt: 1 }),
+    // the reminders job: what's due to be pushed now
+    c.personalReminders.createIndex({ isActive: 1, remindAt: 1 }),
+    c.notifications.createIndex({ userId: 1, organizationId: 1, readAt: 1 }),
   ]);
 }
