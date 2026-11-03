@@ -1084,8 +1084,13 @@ export type ReminderRepeat = "once" | "weekly" | "monthly" | "yearly";
 export interface PersonalReminderDoc extends Timestamps {
   _id: Id;
   userId: Id;
+  /** "pay": rent, bills (marking it paid records spending). "receive": money someone promised to give (marking it received records income). Missing = "pay". */
+  kind?: "pay" | "receive";
   title: string;
   note?: string;
+  /** "receive": who will give the money, and their number to call */
+  person?: string;
+  phone?: string;
   /** what's usually paid; "Mark paid" records it as spending */
   amountPaise?: number | null;
   categoryId?: Id | null;

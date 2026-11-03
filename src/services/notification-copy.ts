@@ -183,6 +183,11 @@ const COPY = {
     gu: (f) => ({ title: `યાદ અપાવું: ${f.s("title")}`, body: `${phWhat(f)} ${phWhen(f)} ભરવાનું છે.${f.has("note") ? ` ${f.s("note")}` : ""}` }),
     hi: (f) => ({ title: `याद दिलाना: ${f.s("title")}`, body: `${phWhat(f)} ${phWhen(f)} चुकाना है।${f.has("note") ? ` ${f.s("note")}` : ""}` }),
   },
+  "personal.collect": {
+    en: (f) => ({ title: f.has("person") ? `Collect from ${f.s("person")}: ${f.s("title")}` : `Money to collect: ${f.s("title")}`, body: `${phWhat(f)} — ${f.has("person") ? `${f.s("person")} said they'd give it` : "due to come in"} ${phWhen(f)}.${f.has("phone") ? ` Call: ${f.s("phone")}.` : ""}${f.has("note") ? ` ${f.s("note")}` : ""}` }),
+    gu: (f) => ({ title: f.has("person") ? `${f.s("person")} પાસેથી લેવાના: ${f.s("title")}` : `લેવાના પૈસા: ${f.s("title")}`, body: `${phWhat(f)} — ${f.has("person") ? `${f.s("person")} એ ${phWhen(f)} આપવાનું કહ્યું છે` : `${phWhen(f)} આવવાના છે`}.${f.has("phone") ? ` ફોન: ${f.s("phone")}.` : ""}${f.has("note") ? ` ${f.s("note")}` : ""}` }),
+    hi: (f) => ({ title: f.has("person") ? `${f.s("person")} से लेने हैं: ${f.s("title")}` : `लेने वाले पैसे: ${f.s("title")}`, body: `${phWhat(f)} — ${f.has("person") ? `${f.s("person")} ने ${phWhen(f)} देने को कहा है` : `${phWhen(f)} आने हैं`}।${f.has("phone") ? ` फ़ोन: ${f.s("phone")}।` : ""}${f.has("note") ? ` ${f.s("note")}` : ""}` }),
+  },
   "personal.budget.near": {
     en: (f) => ({ title: f.has("overall") ? "80% of your monthly budget used" : `80% of your ${phCat(f)} budget used`, body: `You've spent ${f.m("spentPaise")} of ${f.m("budgetPaise")} in ${f.month("month")}.` }),
     gu: (f) => ({ title: f.has("overall") ? "મહિનાના બજેટના 80% વપરાઈ ગયા" : `${phCat(f)} ના બજેટના 80% વપરાઈ ગયા`, body: `${f.month("month")} માં ${f.m("budgetPaise")} માંથી ${f.m("spentPaise")} ખર્ચાઈ ગયા છે.` }),

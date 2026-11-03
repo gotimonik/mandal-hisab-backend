@@ -45,6 +45,7 @@ export function registerPersonalRoutes(r: Router) {
   r.patch(`${base}/reminders/:id`, async (req) => rem.updateReminder(await req.auth(), parseObjectId(req.params.id, "Reminder"), await req.body(rem.ReminderUpdateSchema)));
   r.delete(`${base}/reminders/:id`, async (req) => rem.deleteReminder(await req.auth(), parseObjectId(req.params.id, "Reminder")));
   r.post(`${base}/reminders/:id/paid`, async (req) => rem.markPaid(await req.auth(), parseObjectId(req.params.id, "Reminder"), await req.body(rem.PaidSchema)));
+  r.post(`${base}/reminders/:id/later`, async (req) => rem.remindLater(await req.auth(), parseObjectId(req.params.id, "Reminder"), await req.body(rem.LaterSchema)));
   r.post(`${base}/reminders/:id/skip`, async (req) => rem.skipReminder(await req.auth(), parseObjectId(req.params.id, "Reminder")));
 
   r.get(`${base}/mandal-sync`, async (req) => ms.getMandalSync(await req.auth()));
