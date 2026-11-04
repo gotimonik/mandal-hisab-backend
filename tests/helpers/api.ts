@@ -16,9 +16,9 @@ let ipCounter = 0;
 export async function api<T = any>(
   method: string,
   path: string,
-  opts: { token?: string; body?: unknown; form?: FormData } = {},
+  opts: { token?: string; body?: unknown; form?: FormData; headers?: Record<string, string> } = {},
 ): Promise<ApiResult<T>> {
-  const headers: Record<string, string> = { "x-forwarded-for": `10.0.0.${(ipCounter++ % 250) + 1}` };
+  const headers: Record<string, string> = { "x-forwarded-for": `10.0.0.${(ipCounter++ % 250) + 1}`, ...(opts.headers ?? {}) };
   if (opts.token) headers.authorization = `Bearer ${opts.token}`;
   if (opts.body !== undefined) headers["content-type"] = "application/json";
   const req = new NextRequest(`http://localhost/api/v1${path}`, {

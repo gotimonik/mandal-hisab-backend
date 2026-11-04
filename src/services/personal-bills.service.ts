@@ -9,6 +9,7 @@ import type { PersonalBillDoc, PersonalBillReading, PersonalBillRef } from "@/ty
 import { readStoredFile, storage, storePersonalBill } from "./upload.service";
 import { BillReaderError, billReader, MAX_READ_IMAGE_BYTES, type RawBillReading } from "./bill-reader.service";
 import { ensureSetup } from "./personal.service";
+import { realUserId } from "./personal-books.service";
 
 /**
  * Personal Hisab bills: the person scans a bill, we keep the file and read the total, date and
@@ -18,7 +19,8 @@ import { ensureSetup } from "./personal.service";
  */
 
 const TZ = "Asia/Kolkata";
-const own = (auth: AuthContext) => auth.user._id;
+// bills (and the monthly scan limit) belong to the person, whichever book they're kept in
+const own = (auth: AuthContext) => realUserId(auth);
 const thisMonth = () => formatDateOnly(todayIn(TZ)).slice(0, 7);
 
 /** Scanned but never saved with an entry for this long → removed by the daily job. */
@@ -77,7 +79,8 @@ export async function scanBill(auth: AuthContext, file: File) {
   const reader = billReader();
   if (reader && !(stored.contentType !== "application/pdf" && stored.bytes.length > MAX_READ_IMAGE_BYTES)) {
     try {
-      const cats = await c.personalCategories.find({ userId, isArchived: false }, { projection: { kind: 1, name: 1 } }).toArray();
+      // the categories of the book being filled in (an extra book's records carry the book's id)
+      const cats = await c.personalCategories.find({ userId: auth.user._id, isArchived: false }, { projection: { kind: 1, name: 1 } }).toArray();
       const raw = await reader({ bytes: stored.bytes, contentType: stored.contentType, categories: cats.map((k) => ({ id: k._id.toHexString(), kind: k.kind, name: k.name })), today: formatDateOnly(todayIn(TZ)) });
       doc.reading = clean(raw, new Map(cats.map((k) => [k._id.toHexString(), k.kind])));
       await c.personalBills.updateOne({ _id: doc._id }, { $set: { reading: doc.reading, updatedAt: new Date() } });

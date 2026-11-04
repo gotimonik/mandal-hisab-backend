@@ -61,7 +61,7 @@ export const ORG_COLLECTIONS = [
  * to one person, not to the Mandal, so it never goes into a Mandal's backup (the nightly server
  * backup still keeps it).
  */
-export const NOT_IN_BACKUP: (keyof Collections)[] = ["sessions", "authTokens", "rateLimits", "pushDevices", "personalWallets", "personalCategories", "personalEntries", "personalReminders", "personalBills"];
+export const NOT_IN_BACKUP: (keyof Collections)[] = ["sessions", "authTokens", "rateLimits", "pushDevices", "personalWallets", "personalCategories", "personalEntries", "personalReminders", "personalBills", "personalBooks"];
 /** Saved separately: the Mandal itself, its numbering (receipt no. …) and its people. */
 export const SPECIAL_IN_BACKUP: (keyof Collections)[] = ["organizations", "counters", "users"];
 

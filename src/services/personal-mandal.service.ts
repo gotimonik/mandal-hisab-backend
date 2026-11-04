@@ -100,6 +100,8 @@ async function linkedMembers(userId: ObjectId) {
  * throttled so a page that loads several things syncs once.
  */
 export async function syncMandal(auth: AuthContext, opts: { force?: boolean } = {}) {
+  // only the main book gets the person's Mandal money
+  if (auth.personal && !auth.personal.isMain) return { synced: false as const };
   const s = auth.user.personalMandalSync;
   if (!s?.enabled) return { synced: false as const };
   const c = await cols();
@@ -146,6 +148,8 @@ export async function syncMandal(auth: AuthContext, opts: { force?: boolean } = 
 /* ------------------------------------------------------------------ settings */
 
 export async function getMandalSync(auth: AuthContext) {
+  // an extra book ("Office" …): copying Mandal money in is only for the main book
+  if (auth.personal && !auth.personal.isMain) return { available: false, enabled: false, walletId: null, fromDate: null, mandals: [] };
   const s = auth.user.personalMandalSync;
   const c = await cols();
   const linked = await linkedMembers(auth.user._id);
@@ -153,6 +157,7 @@ export async function getMandalSync(auth: AuthContext) {
     .aggregate<{ _id: ObjectId; n: number }>([{ $match: { userId: auth.user._id, "source.organizationId": { $exists: true } } }, { $group: { _id: "$source.organizationId", n: { $sum: 1 } } }])
     .toArray();
   return {
+    available: true,
     enabled: !!s?.enabled,
     walletId: s?.walletId ?? null,
     fromDate: s?.fromDate ? formatDateOnly(s.fromDate) : null,
@@ -168,6 +173,7 @@ export const MandalSyncSchema = z.object({
 
 /** Turn the sync on / off and choose the wallet and the start date. Turning it on syncs straight away. */
 export async function updateMandalSync(auth: AuthContext, input: z.infer<typeof MandalSyncSchema>) {
+  if (auth.personal && !auth.personal.isMain) throw badRequest("Mandal money can only be added to your main book");
   const c = await cols();
   const userId = auth.user._id;
   if (input.walletId && !(await c.personalWallets.findOne({ _id: input.walletId, userId, isArchived: false }))) throw notFound("Wallet");

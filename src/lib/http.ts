@@ -74,7 +74,7 @@ function corsHeaders(req: NextRequest): Record<string, string> {
   if (origin && allowed.includes(origin)) {
     h["Access-Control-Allow-Origin"] = origin;
     h["Access-Control-Allow-Methods"] = "GET,POST,PATCH,PUT,DELETE,OPTIONS";
-    h["Access-Control-Allow-Headers"] = "Authorization,Content-Type,Idempotency-Key";
+    h["Access-Control-Allow-Headers"] = "Authorization,Content-Type,Idempotency-Key,X-Personal-Book";
     h["Access-Control-Max-Age"] = "600";
   }
   return h;

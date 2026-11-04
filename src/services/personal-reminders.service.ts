@@ -8,6 +8,7 @@ import type { PersonalReminderDoc, ReminderRepeat } from "@/types/models";
 import { dateOnly, money, objectId, optText, phone } from "@/validators/common";
 import { localize, notify } from "./notification.service";
 import { copy, isLang, type Lang } from "./notification-copy";
+import { bookLink, ownerOfBook, realUserId } from "./personal-books.service";
 import { createEntry, ensureSetup, personalDefaults } from "./personal.service";
 
 /**
@@ -263,14 +264,16 @@ export async function listReminders(auth: AuthContext, opts: { markRead?: boolea
   await ensureSetup(auth);
   const c = await cols();
   const userId = auth.user._id;
+  // alerts go to the person (whichever book they came from)
+  const me = realUserId(auth);
   const [rows, alerts] = await Promise.all([
     c.personalReminders.find({ userId }).sort({ isActive: -1, dueDate: 1, time: 1 }).toArray(),
-    c.notifications.find({ userId, organizationId: null }).sort({ createdAt: -1 }).limit(20).toArray(),
+    c.notifications.find({ userId: me, organizationId: null }).sort({ createdAt: -1 }).limit(20).toArray(),
   ]);
   const now = new Date();
   const lang: Lang = isLang(auth.user.language) ? auth.user.language : "en";
   const unread = alerts.filter((a) => !a.readAt).map((a) => a._id);
-  if (opts.markRead && unread.length) await c.notifications.updateMany({ _id: { $in: unread }, userId }, { $set: { readAt: now } });
+  if (opts.markRead && unread.length) await c.notifications.updateMany({ _id: { $in: unread }, userId: me }, { $set: { readAt: now } });
   return {
     reminders: await Promise.all(rows.map((r) => reminderOut(r, now))),
     alerts: alerts.map((a) => {
@@ -313,12 +316,14 @@ export async function runPersonalReminders(now = new Date()) {
       const today = todayIn(TZ, now);
       const days = Math.round((cur.dueDate.getTime() - today.getTime()) / 86_400_000);
       const type = kindOf(cur) === "receive" ? "personal.collect" : "personal.reminder";
+      // a reminder in an extra book carries the book's id: the push goes to the book's owner
+      const person = await ownerOfBook(cur.userId);
       const created = await notify({
         organizationId: null,
-        userId: cur.userId,
+        userId: person,
         type,
         copy: copy(type, { title: cur.title, note: cur.note ?? null, person: cur.person ?? null, phone: cur.phone ?? null, amountPaise: cur.amountPaise ?? null, dueDate: cur.dueDate.toISOString(), time: cur.time, when: days === 0 ? "today" : days === 1 ? "tomorrow" : "" }, "INR"),
-        link: "/personal/reminders",
+        link: bookLink("/personal/reminders", cur.userId, person),
         dedupeKey: `ph-rem:${cur._id.toHexString()}:${formatDateOnly(cur.dueDate)}`,
       });
       await c.personalReminders.updateOne({ _id: cur._id }, { $set: { notifiedFor: cur.dueDate, updatedAt: now } });

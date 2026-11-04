@@ -9,6 +9,11 @@ import type { OrganizationDoc, OrganizationMembershipDoc, OrgRole, SessionDoc, U
 export interface AuthContext {
   user: UserDoc;
   session: SessionDoc;
+  /**
+   * Personal Hisab only: which book this request is about. For an extra book, `user` is a copy
+   * of the person with `_id` = the book's id and the book's settings (see personal-books.service).
+   */
+  personal?: { realUserId: ObjectId; bookId: ObjectId; isMain: boolean; bookName: string };
 }
 
 export interface OrgContext extends AuthContext {

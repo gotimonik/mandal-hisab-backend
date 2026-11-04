@@ -11,6 +11,7 @@ import { notify } from "./notification.service";
 import { syncMandal } from "./personal-mandal.service";
 import { copy } from "./notification-copy";
 import { billRefOut, claimBill, releaseBill } from "./personal-bills.service";
+import { bookLink, readBookSettings, realUserId, writeBookSettings } from "./personal-books.service";
 
 /**
  * Personal Hisab — a person's own money book (daily income, spending, wallets, budgets).
@@ -84,7 +85,7 @@ export async function ensureSetup(auth: AuthContext) {
       )
       .catch(ignoreDup);
   }
-  await c.users.updateOne({ _id: userId, personalSetupAt: { $exists: false } }, { $set: { personalSetupAt: now } });
+  await writeBookSettings(userId, { $set: { personalSetupAt: now } }, { personalSetupAt: { $exists: false } });
   auth.user.personalSetupAt = now;
 }
 
@@ -181,7 +182,7 @@ async function budgetAlerts(auth: AuthContext, date: Date, categoryId: ObjectId 
   const spentWhere = async (extra: Filter<PersonalEntryDoc>) =>
     (await c.personalEntries.aggregate<{ t: number }>([{ $match: { userId, type: "expense", date: { $gte: start, $lte: end }, ...extra } }, { $group: { _id: null, t: { $sum: "$amountPaise" } } }]).toArray())[0]?.t ?? 0;
   const checks: { id: string; budget: number; spent: number; params: Record<string, string | number | null> }[] = [];
-  const overall = (await c.users.findOne({ _id: userId }, { projection: { personalMonthlyBudgetPaise: 1 } }))?.personalMonthlyBudgetPaise;
+  const overall = (await readBookSettings(userId))?.personalMonthlyBudgetPaise;
   if (overall) checks.push({ id: "all", budget: overall, spent: await spentWhere({}), params: { overall: 1 } });
   if (categoryId) {
     const k = await c.personalCategories.findOne({ _id: categoryId, userId });
@@ -194,11 +195,12 @@ async function budgetAlerts(auth: AuthContext, date: Date, categoryId: ObjectId 
     const level = over ? "over" : "near";
     await notify({
       organizationId: null,
-      userId,
+      // the person (also for an extra book, whose records carry the book's id)
+      userId: realUserId(auth),
       type: `personal.budget.${level}`,
       copy: copy(`personal.budget.${level}`, { ...ch.params, spentPaise: ch.spent, budgetPaise: ch.budget, overPaise: Math.max(0, ch.spent - ch.budget), month }, "INR"),
-      link: ch.id === "all" ? "/personal/budgets" : `/personal/categories/${ch.id}`,
-      dedupeKey: `ph-budget:${ch.id}:${month}:${level}`,
+      link: bookLink(ch.id === "all" ? "/personal/budgets" : `/personal/categories/${ch.id}`, userId, realUserId(auth)),
+      dedupeKey: `ph-budget:${userId.toHexString()}:${ch.id}:${month}:${level}`,
     });
   }
 }
@@ -267,7 +269,7 @@ export async function createEntry(auth: AuthContext, input: z.infer<typeof Entry
   }
   if (input.billId) {
     try {
-      doc.bill = await claimBill(userId, input.billId, doc._id);
+      doc.bill = await claimBill(realUserId(auth), input.billId, doc._id);
     } catch (e) {
       // the bill isn't theirs / is gone: don't leave a half-saved entry behind
       await c.personalEntries.deleteOne({ _id: doc._id, userId });
@@ -301,10 +303,10 @@ export async function updateEntry(auth: AuthContext, id: ObjectId, body: unknown
   const oldBill = existing.bill?.billId ?? null;
   let bill = existing.bill ?? null;
   if (input.billId === null) bill = null;
-  else if (input.billId && !(oldBill && oldBill.equals(input.billId))) bill = await claimBill(userId, input.billId, id);
+  else if (input.billId && !(oldBill && oldBill.equals(input.billId))) bill = await claimBill(realUserId(auth), input.billId, id);
   const set = { type: input.type, amountPaise: input.amount, date: input.date, ...refs, bill, updatedAt: new Date() };
   await c.personalEntries.updateOne({ _id: id, userId }, input.note ? { $set: { ...set, note: input.note } } : { $set: set, $unset: { note: "" } });
-  if (oldBill && !(bill && bill.billId.equals(oldBill))) await releaseBill(userId, oldBill);
+  if (oldBill && !(bill && bill.billId.equals(oldBill))) await releaseBill(realUserId(auth), oldBill);
   const doc = await c.personalEntries.findOne({ _id: id, userId });
   if (doc!.type === "expense") await budgetAlerts(auth, doc!.date, doc!.categoryId).catch((e) => console.error("[budget-alerts]", e));
   return { entry: entryOut(doc!, await loadBook(userId)) };
@@ -317,7 +319,7 @@ export async function deleteEntry(auth: AuthContext, id: ObjectId) {
   if (e.source) throw badRequest("This comes from your Mandal. It goes away by itself if the Mandal reverses it");
   const r = await c.personalEntries.deleteOne({ _id: id, userId: own(auth) });
   if (!r.deletedCount) throw notFound("Entry");
-  if (e.bill) await releaseBill(own(auth), e.bill.billId);
+  if (e.bill) await releaseBill(realUserId(auth), e.bill.billId);
   return { ok: true };
 }
 
@@ -694,7 +696,7 @@ export const SettingsSchema = z.object({
 /** The defaults a new entry starts with (a hidden wallet / category no longer counts). */
 export async function personalDefaults(userId: ObjectId) {
   const c = await cols();
-  const d = (await c.users.findOne({ _id: userId }, { projection: { personalDefaults: 1 } }))?.personalDefaults;
+  const d = (await readBookSettings(userId))?.personalDefaults;
   const [w, e, i] = await Promise.all([
     d?.walletId ? c.personalWallets.findOne({ _id: d.walletId, userId, isArchived: false }) : null,
     d?.expenseCategoryId ? c.personalCategories.findOne({ _id: d.expenseCategoryId, userId, isArchived: false }) : null,
@@ -727,9 +729,9 @@ export async function updateSettings(auth: AuthContext, input: z.infer<typeof Se
   if (input.defaultExpenseCategoryId !== undefined) set["personalDefaults.expenseCategoryId"] = input.defaultExpenseCategoryId;
   if (input.defaultIncomeCategoryId !== undefined) set["personalDefaults.incomeCategoryId"] = input.defaultIncomeCategoryId;
   // personalDefaults may be null on older accounts: dotted $set can't go into null
-  if (Object.keys(set).some((k) => k.startsWith("personalDefaults."))) await c.users.updateOne({ _id: userId, personalDefaults: null }, { $set: { personalDefaults: {} } });
-  await c.users.updateOne({ _id: userId }, { $set: set });
-  const u = await c.users.findOne({ _id: userId }, { projection: { personalMonthlyBudgetPaise: 1, personalBudgetAlerts: 1 } });
+  if (Object.keys(set).some((k) => k.startsWith("personalDefaults."))) await writeBookSettings(userId, { $set: { personalDefaults: {} } }, { personalDefaults: null });
+  await writeBookSettings(userId, { $set: set });
+  const u = await readBookSettings(userId);
   const d = await personalDefaults(userId);
   return { monthlyBudgetPaise: u?.personalMonthlyBudgetPaise ?? null, budgetAlerts: u?.personalBudgetAlerts !== false, defaults: d };
 }

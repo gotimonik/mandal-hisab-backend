@@ -46,6 +46,8 @@ export interface UserDoc extends Timestamps {
   /** Personal Hisab: copy the person's own Mandal money (hapta paid, upad, withdrawals …) into their book. */
   personalMandalSync?: { enabled: boolean; walletId?: Id | null; fromDate: Date } | null;
   personalMandalSyncedAt?: Date | null;
+  /** Personal Hisab: the name the person gave their main book (absent = "Personal") */
+  personalBookName?: string | null;
 }
 
 export interface SessionDoc {
@@ -1077,6 +1079,23 @@ export interface PersonalEntryDoc extends Timestamps {
     /** "spend": the part that is real spending (interest, fees); "main": the rest */
     part: "main" | "spend";
   };
+}
+
+/**
+ * Personal Hisab: an extra book ("Office", "Shop" …) besides the person's main one. Its wallets,
+ * categories, entries and reminders carry the book's _id as their `userId` (the main book's carry
+ * the person's own id), so every Personal Hisab query is scoped to one book without changing.
+ * The book's own settings (budget, alerts, defaults) live here, under the same names as on UserDoc.
+ */
+export interface PersonalBookDoc extends Timestamps {
+  _id: Id;
+  /** the person it belongs to */
+  userId: Id;
+  name: string;
+  personalSetupAt?: Date;
+  personalMonthlyBudgetPaise?: number | null;
+  personalBudgetAlerts?: boolean;
+  personalDefaults?: { walletId?: Id | null; expenseCategoryId?: Id | null; incomeCategoryId?: Id | null } | null;
 }
 
 /** What an entry keeps about its bill (the file itself is only reachable through the API). */
