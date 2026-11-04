@@ -29,6 +29,7 @@ export function registerPersonalRoutes(r: Router) {
 
   r.get(`${base}/overview`, async (req) => p.overview(await pauth(req), req.queryAs(p.OverviewQuery)));
   r.get(`${base}/summary`, async (req) => p.summary(await pauth(req), req.queryAs(p.SummaryQuery)));
+  r.get(`${base}/passbook`, async (req) => p.passbook(await pauth(req), req.queryAs(p.PassbookQuery)));
 
   r.get(`${base}/entries`, async (req) => {
     const auth = await pauth(req);

@@ -735,3 +735,99 @@ export async function updateSettings(auth: AuthContext, input: z.infer<typeof Se
   const d = await personalDefaults(userId);
   return { monthlyBudgetPaise: u?.personalMonthlyBudgetPaise ?? null, budgetAlerts: u?.personalBudgetAlerts !== false, defaults: d };
 }
+
+/* ------------------------------------------------------------------ passbook */
+
+export const PassbookQuery = z.object({
+  from: dateOnly,
+  to: dateOnly,
+  /** one wallet; empty = all wallets together */
+  walletId: objectId.optional().or(z.literal("").transform(() => undefined)),
+});
+
+const PASSBOOK_MAX_ROWS = 3000;
+
+/**
+ * A passbook for one book (and one wallet, or all of them) over a period: the opening balance,
+ * every entry in date order with the balance after it, the closing balance, totals, and spending
+ * by category. Balances follow the same rules as the wallets: money in (income, money received
+ * from a Mandal) adds, money out takes away, and money moved between the person's own wallets
+ * only counts when looking at one wallet.
+ */
+export async function passbook(auth: AuthContext, q: z.infer<typeof PassbookQuery>) {
+  await ensureSetup(auth);
+  await syncMandal(auth).catch((e) => console.error("[mandal-sync]", e));
+  if (q.from.getTime() > q.to.getTime()) throw badRequest("'From' must be before 'To'");
+  const c = await cols();
+  const userId = own(auth);
+  const book = await loadBook(userId);
+  const wallet = q.walletId ? book.walletById.get(q.walletId.toHexString()) : undefined;
+  if (q.walletId && !wallet) throw notFound("Wallet");
+  const W = wallet?._id ?? null;
+
+  const plus = { $in: ["$type", ["income", "in"]] };
+  const before = { $lt: q.from };
+  // the balance when the period starts
+  let opening = W ? wallet!.openingBalancePaise : book.wallets.reduce((a, w) => a + w.openingBalancePaise, 0);
+  if (W) {
+    const [own1, into] = await Promise.all([
+      c.personalEntries.aggregate<{ t: number }>([{ $match: { userId, walletId: W, date: before } }, { $group: { _id: null, t: { $sum: { $cond: [plus, "$amountPaise", { $multiply: ["$amountPaise", -1] }] } } } }]).toArray(),
+      c.personalEntries.aggregate<{ t: number }>([{ $match: { userId, type: "transfer", toWalletId: W, date: before } }, { $group: { _id: null, t: { $sum: "$amountPaise" } } }]).toArray(),
+    ]);
+    opening += (own1[0]?.t ?? 0) + (into[0]?.t ?? 0);
+  } else {
+    const all = await c.personalEntries
+      .aggregate<{ t: number }>([{ $match: { userId, type: { $ne: "transfer" }, date: before } }, { $group: { _id: null, t: { $sum: { $cond: [plus, "$amountPaise", { $multiply: ["$amountPaise", -1] }] } } } }])
+      .toArray();
+    opening += all[0]?.t ?? 0;
+  }
+
+  const inPeriod: Filter<PersonalEntryDoc> = { userId, date: { $gte: q.from, $lte: q.to }, ...(W ? { $or: [{ walletId: W }, { toWalletId: W }] } : { type: { $ne: "transfer" } }) };
+  const found = await c.personalEntries.countDocuments(inPeriod);
+  if (found > PASSBOOK_MAX_ROWS) throw badRequest(`This period has ${found} entries — choose a shorter period (up to ${PASSBOOK_MAX_ROWS} entries)`);
+  const entries = await c.personalEntries.find(inPeriod).sort({ date: 1, createdAt: 1, _id: 1 }).toArray();
+
+  let balance = opening;
+  let totalIn = 0;
+  let totalOut = 0;
+  const spendBy = new Map<string, { category: ReturnType<typeof categoryOut> | null; totalPaise: number }>();
+  const rows = entries.map((e) => {
+    let inP = 0;
+    let outP = 0;
+    const isIn = e.type === "income" || e.type === "in";
+    if (W) {
+      if (e.walletId.equals(W)) {
+        if (isIn) inP = e.amountPaise;
+        else outP = e.amountPaise;
+      }
+      if (e.type === "transfer" && e.toWalletId?.equals(W)) inP += e.amountPaise;
+    } else if (isIn) inP = e.amountPaise;
+    else outP = e.amountPaise;
+    balance += inP - outP;
+    totalIn += inP;
+    totalOut += outP;
+    if (e.type === "expense" && outP) {
+      const k = e.categoryId ? book.categoryById.get(e.categoryId.toHexString()) : undefined;
+      const key = k ? k._id.toHexString() : "none";
+      const cur = spendBy.get(key) ?? { category: k ? categoryOut(k) : null, totalPaise: 0 };
+      cur.totalPaise += outP;
+      spendBy.set(key, cur);
+    }
+    return { ...entryOut(e, book), inPaise: inP, outPaise: outP, balancePaise: balance };
+  });
+
+  return {
+    book: { name: auth.personal?.bookName ?? "Personal", isMain: auth.personal?.isMain ?? true },
+    person: auth.user.name,
+    from: formatDateOnly(q.from),
+    to: formatDateOnly(q.to),
+    wallet: wallet ? walletOut(wallet) : null,
+    openingPaise: opening,
+    closingPaise: balance,
+    totalInPaise: totalIn,
+    totalOutPaise: totalOut,
+    rows,
+    spending: [...spendBy.values()].sort((a, b) => b.totalPaise - a.totalPaise),
+    wallets: book.wallets.map(walletOut),
+  };
+}
