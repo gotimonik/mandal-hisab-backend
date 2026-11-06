@@ -347,19 +347,21 @@ async function atlasSearchOrgs(term: string): Promise<DiscoverHit[]> {
           },
         },
       },
+      // The search index is eventually consistent: recheck visibility against the live document.
+      { $match: { status: "active", "settings.membership.discoverable": { $ne: false } } },
       { $limit: 20 },
       { $project: DISCOVER_PROJECTION },
     ])
     .toArray();
 }
 
-/** Plain substring match on the name (or its English spelling): used without Atlas Search, or when it finds nothing. */
+/** Plain substring match on the name, its English spelling, or the city: used without Atlas Search, or when it finds nothing. */
 async function regexSearchOrgs(term: string): Promise<DiscoverHit[]> {
   const c = await cols();
   const rx = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return c.organizations
     .find(
-      { status: "active", $or: [{ name: { $regex: rx, $options: "i" } }, { nameLatin: { $regex: rx, $options: "i" } }], "settings.membership.discoverable": { $ne: false } },
+      { status: "active", $or: [{ name: { $regex: rx, $options: "i" } }, { nameLatin: { $regex: rx, $options: "i" } }, { city: { $regex: rx, $options: "i" } }], "settings.membership.discoverable": { $ne: false } },
       { projection: DISCOVER_PROJECTION },
     )
     .limit(20)

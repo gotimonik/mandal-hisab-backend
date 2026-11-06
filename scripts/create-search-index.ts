@@ -19,7 +19,8 @@ async function main() {
   for await (const o of c.organizations.find({}, { projection: { name: 1, nameEnglish: 1, nameLatin: 1 } })) {
     const next = searchSpellings(o.name, o.nameEnglish);
     if ((o.nameLatin ?? null) === next) continue;
-    await c.organizations.updateOne({ _id: o._id }, { $set: { nameLatin: next } });
+    // Filter on the names we read so a concurrent rename (which saves its own spelling) isn't overwritten.
+    await c.organizations.updateOne({ _id: o._id, name: o.name, nameEnglish: o.nameEnglish ?? null }, { $set: { nameLatin: next } });
     console.info(`  ${o.name} → ${next ?? "(English name, none needed)"}`);
     changed++;
   }
