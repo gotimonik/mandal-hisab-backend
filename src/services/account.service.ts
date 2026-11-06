@@ -7,6 +7,7 @@ import { badRequest, conflict, isDuplicateKeyError, notFound } from "@/lib/error
 import { todayIn } from "@/lib/dates";
 import type { OrgContext } from "@/lib/auth";
 import type { FinancialAccountDoc } from "@/types/models";
+import { UPI_ID_PATTERN } from "@/lib/org-defaults";
 import { dateOnly, idempotencyKey, money, optText, reason } from "@/validators/common";
 import {
   ADJUSTMENT_EQUITY,
@@ -17,13 +18,27 @@ import {
   reverseTransaction,
 } from "./ledger.service";
 
-export const AccountInputSchema = z.object({
-  name: z.string().trim().min(2).max(80),
-  // Cash only for now: no bank or UPI accounts, and no bank details are collected.
-  type: z.enum(["cash"], { message: "Only cash accounts can be added for now" }).default("cash"),
-  openingBalance: money({ allowZero: true }).default(0),
-  openingDate: dateOnly.optional(),
-});
+/** The Mandal's own UPI ID, e.g. gotimandal@okaxis. Lower-cased: UPI IDs are case-insensitive. */
+export const upiId = z
+  .string()
+  .trim()
+  .regex(UPI_ID_PATTERN, "Enter a UPI ID like mandal@okaxis")
+  .transform((v) => v.toLowerCase());
+
+export const AccountInputSchema = z
+  .object({
+    name: z.string().trim().min(2).max(80),
+    // Cash or UPI. No bank accounts: no account numbers or IFSC are collected.
+    type: z.enum(["cash", "upi"], { message: "Choose cash or UPI" }).default("cash"),
+    upiId: upiId.optional(),
+    openingBalance: money({ allowZero: true }).default(0),
+    openingDate: dateOnly.optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (v.type === "upi" && !v.upiId) ctx.addIssue({ code: "custom", path: ["upiId"], message: "Enter the Mandal's UPI ID" });
+  });
+
+export const AccountUpdateSchema = z.object({ name: z.string().trim().min(2).max(80).optional(), upiId: upiId.optional(), isActive: z.boolean().optional() });
 
 export const TransferSchema = z.object({
   fromAccountId: z.string(),
@@ -61,6 +76,7 @@ export async function createAccount(ctx: OrgContext, input: z.infer<typeof Accou
     organizationId: ctx.orgId,
     name: input.name,
     type: input.type,
+    ...(input.type === "upi" ? { upiId: input.upiId } : {}),
     openingBalancePaise: input.openingBalance,
     openingDate: input.openingDate ?? todayIn(ctx.org.settings.timezone),
     isActive: true,
@@ -98,10 +114,14 @@ export async function createAccount(ctx: OrgContext, input: z.infer<typeof Accou
   return doc;
 }
 
-export async function updateAccount(ctx: OrgContext, id: ObjectId, input: { name?: string; isActive?: boolean }) {
+export async function updateAccount(ctx: OrgContext, id: ObjectId, input: z.infer<typeof AccountUpdateSchema>) {
   const c = await cols();
   const fa = await c.financialAccounts.findOne({ _id: id, organizationId: ctx.orgId });
   if (!fa) throw notFound("Account");
+  if (input.upiId !== undefined && fa.type !== "upi") throw badRequest("Only a UPI account has a UPI ID");
+  if (input.isActive === false && ctx.org.settings.upi.accountId?.equals(id)) {
+    throw badRequest("Members pay into this UPI account. Choose another one, or turn UPI off, in Settings first");
+  }
   if (input.isActive === false) {
     const [bal] = await accountBalances(ctx.orgId, { prefix: faKey(id) });
     if (bal && bal.balancePaise !== 0) throw badRequest("Transfer the balance out before deactivating this account");
@@ -114,7 +134,7 @@ export async function updateAccount(ctx: OrgContext, id: ObjectId, input: { name
     if (isDuplicateKeyError(e)) throw conflict("An account with this name already exists");
     throw e;
   }
-  await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "account.update", entityType: "financialAccount", entityId: id, before: { name: fa.name, isActive: fa.isActive }, after: input });
+  await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "account.update", entityType: "financialAccount", entityId: id, before: { name: fa.name, isActive: fa.isActive, upiId: fa.upiId }, after: input });
   return { ok: true };
 }
 

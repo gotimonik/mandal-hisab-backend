@@ -113,7 +113,10 @@ export interface OrganizationSettings {
   overdueReminderEveryDays: number; // 0 = disabled
   managerPermissions: ManagerPermissionFlags;
   expenseCategories: ExpenseCategory[];
-  paymentMethods: string[]; // cash, bank_transfer, upi, cheque, ...
+  /** Derived on load from `upi` (see org-defaults): ["cash"] or ["cash", "upi"]. */
+  paymentMethods: string[];
+  /** UPI: when on, payments can be marked UPI and members can pay the Mandal's UPI ID from the app. */
+  upi: UpiSettings;
   installmentHorizonMonths: number; // how far ahead open-ended schemes are generated
   /** The Mandal's main monthly hapta (backed by a primary scheme). Absent until set up. */
   monthlyHapta?: MonthlyHaptaSettings | null;
@@ -142,6 +145,12 @@ export interface SettlementState {
   distributions: { at: Date; totalPaise: number; transactionId: Id | null; perShare: number; shares: number }[];
   payouts: { memberId: Id; at: Date; netPaise: number; grossPaise: number; upadSettledPaise: number; withdrawalId: Id | null }[];
   closedAt?: Date | null;
+}
+
+export interface UpiSettings {
+  enabled: boolean;
+  /** The Mandal's UPI account (a FinancialAccount of type "upi") members pay into. */
+  accountId: Id | null;
 }
 
 export interface MonthlyHaptaSettings {
@@ -1016,12 +1025,18 @@ export interface UpadPaymentClaimDoc {
 
 export type PersonalWalletKind = "cash" | "bank" | "upi" | "card" | "other";
 
+/** Which UPI app a "upi" wallet is: only a label for the icon and for matching scanned screenshots. */
+export const UPI_APPS = ["phonepe", "gpay", "paytm", "bhim", "amazonpay", "other"] as const;
+export type UpiApp = (typeof UPI_APPS)[number];
+
 /** Where the money sits: cash in hand, a bank account, a UPI wallet … */
 export interface PersonalWalletDoc extends Timestamps {
   _id: Id;
   userId: Id;
   name: string;
   kind: PersonalWalletKind;
+  /** kind "upi" only: the app (PhonePe, GPay …). Absent/null = not said. */
+  upiApp?: UpiApp | null;
   /** set on the starter wallets so the app can show them in the person's language (cleared on rename) */
   key?: string;
   /** money already in it when the person started */
@@ -1116,6 +1131,8 @@ export interface PersonalBillReading {
   type: "expense" | "income";
   categoryId: Id | null;
   walletKind: "cash" | "upi" | "card" | "bank" | null;
+  /** A UPI screenshot: which app it came from, if it shows. */
+  upiApp?: UpiApp | null;
 }
 
 /**

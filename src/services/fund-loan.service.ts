@@ -1,4 +1,4 @@
-import { ALLOWED_PAYMENT_METHODS, CASH_ONLY_MESSAGE } from "@/lib/org-defaults";
+import { isSupportedMethod, UNSUPPORTED_METHOD_MESSAGE } from "@/lib/org-defaults";
 import { formatMoney } from "@/lib/currency";
 import { ObjectId, type AnyBulkWriteOperation, type ClientSession } from "mongodb";
 import { z } from "zod";
@@ -280,7 +280,7 @@ export const LoanPaymentSchema = z
     date: dateOnly,
     note: optText(300),
     accountId: z.string().optional(),
-    method: z.string().refine((m) => (ALLOWED_PAYMENT_METHODS as readonly string[]).includes(m), CASH_ONLY_MESSAGE).default("cash"),
+    method: z.string().refine(isSupportedMethod, UNSUPPORTED_METHOD_MESSAGE).default("cash"),
     reference: optText(100),
     idempotencyKey,
   })
@@ -300,7 +300,8 @@ export async function receiveFundLoanPayment(ctx: OrgContext, loanId: ObjectId, 
   const savings = ctx.org.settings.haptaTreatment === "member_savings";
   const member = await c.members.findOne({ _id: loan.memberId }, { projection: { name: 1 } });
 
-  let accountId = input.accountId;
+  // paid by UPI → into the Mandal's UPI account unless another is chosen
+  let accountId = input.accountId ?? (input.method === "upi" ? ctx.org.settings.upi.accountId?.toHexString() : undefined);
   if (!accountId) {
     const acc = await c.financialAccounts.findOne({ _id: loan.accountId, organizationId: ctx.orgId, isActive: true });
     const cash = acc ?? (await c.financialAccounts.findOne({ organizationId: ctx.orgId, type: "cash", isActive: true }, { sort: { createdAt: 1 } }));

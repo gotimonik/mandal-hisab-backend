@@ -5,7 +5,7 @@ import { badRequest, conflict, isDuplicateKeyError, notFound } from "@/lib/error
 import { formatDateOnly, parseDateOnly, todayIn, utcAddDays, utcAddMonths } from "@/lib/dates";
 import { paiseToRupeeString } from "@/lib/money";
 import type { AuthContext } from "@/lib/auth";
-import type { PersonalCategoryDoc, PersonalEntryDoc, PersonalWalletDoc } from "@/types/models";
+import { UPI_APPS, type PersonalCategoryDoc, type PersonalEntryDoc, type PersonalWalletDoc } from "@/types/models";
 import { dateOnly, idempotencyKey, money, objectId, optText } from "@/validators/common";
 import { notify } from "./notification.service";
 import { syncMandal } from "./personal-mandal.service";
@@ -109,7 +109,7 @@ async function loadBook(userId: ObjectId) {
 }
 type Book = Awaited<ReturnType<typeof loadBook>>;
 
-const walletOut = (w: PersonalWalletDoc) => ({ _id: w._id, name: w.name, key: w.key ?? null, kind: w.kind, isArchived: w.isArchived });
+const walletOut = (w: PersonalWalletDoc) => ({ _id: w._id, name: w.name, key: w.key ?? null, kind: w.kind, upiApp: w.kind === "upi" ? (w.upiApp ?? null) : null, isArchived: w.isArchived });
 const categoryOut = (k: PersonalCategoryDoc) => ({ _id: k._id, kind: k.kind, name: k.name, key: k.key ?? null, tone: k.tone, icon: k.icon ?? null, monthlyBudgetPaise: k.monthlyBudgetPaise ?? null, isArchived: k.isArchived });
 
 function entryOut(e: PersonalEntryDoc, book: Book) {
@@ -535,8 +535,10 @@ export async function listWallets(auth: AuthContext) {
 }
 
 const walletName = z.string().trim().min(1, "Enter a name").max(60);
-export const WalletSchema = z.object({ name: walletName, kind: z.enum(WALLET_KINDS).default("cash"), openingBalance: money({ allowZero: true }).default(0) });
-export const WalletUpdateSchema = z.object({ name: walletName.optional(), kind: z.enum(WALLET_KINDS).optional(), openingBalance: money({ allowZero: true }).optional(), isArchived: z.boolean().optional() });
+/** Which UPI app a "upi" wallet is (PhonePe, GPay …): a label for the icon and for matching screenshots. */
+const upiApp = z.enum(UPI_APPS).nullable();
+export const WalletSchema = z.object({ name: walletName, kind: z.enum(WALLET_KINDS).default("cash"), upiApp: upiApp.optional(), openingBalance: money({ allowZero: true }).default(0) });
+export const WalletUpdateSchema = z.object({ name: walletName.optional(), kind: z.enum(WALLET_KINDS).optional(), upiApp: upiApp.optional(), openingBalance: money({ allowZero: true }).optional(), isArchived: z.boolean().optional() });
 
 const nameTaken = (what: string) => conflict(`You already have a ${what} with this name`);
 
@@ -544,7 +546,7 @@ export async function createWallet(auth: AuthContext, input: z.infer<typeof Wall
   await ensureSetup(auth);
   const c = await cols();
   const now = new Date();
-  const doc: PersonalWalletDoc = { _id: new ObjectId(), userId: own(auth), name: input.name, kind: input.kind, openingBalancePaise: input.openingBalance, isArchived: false, createdAt: now, updatedAt: now };
+  const doc: PersonalWalletDoc = { _id: new ObjectId(), userId: own(auth), name: input.name, kind: input.kind, ...(input.kind === "upi" && input.upiApp ? { upiApp: input.upiApp } : {}), openingBalancePaise: input.openingBalance, isArchived: false, createdAt: now, updatedAt: now };
   try {
     await c.personalWallets.insertOne(doc);
   } catch (e) {
@@ -571,6 +573,13 @@ export async function updateWallet(auth: AuthContext, id: ObjectId, input: z.inf
     unset.key = ""; // renamed: show the person's own name in every language
   }
   if (input.kind !== undefined) set.kind = input.kind;
+  // only a UPI wallet has an app; changing the kind away from UPI drops it
+  if ((input.kind ?? w.kind) !== "upi") {
+    if (w.upiApp) unset.upiApp = "";
+  } else if (input.upiApp !== undefined) {
+    if (input.upiApp) set.upiApp = input.upiApp;
+    else unset.upiApp = "";
+  }
   if (input.openingBalance !== undefined) set.openingBalancePaise = input.openingBalance;
   if (input.isArchived !== undefined) set.isArchived = input.isArchived;
   try {

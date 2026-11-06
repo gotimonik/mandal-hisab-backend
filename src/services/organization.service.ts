@@ -10,14 +10,14 @@ import { withTransaction } from "@/lib/db";
 import { hashToken, joinCode, randomToken } from "@/lib/crypto";
 import { AppError, badRequest, conflict, forbidden, isDuplicateKeyError, notFound } from "@/lib/errors";
 import { audit } from "@/lib/audit";
-import { defaultSettings, ALLOWED_PAYMENT_METHODS, CASH_ONLY_MESSAGE } from "@/lib/org-defaults";
+import { defaultSettings, withSettingsDefaults, SUPPORTED_PAYMENT_METHODS, UNSUPPORTED_METHOD_MESSAGE } from "@/lib/org-defaults";
 import type { AuthContext, OrgContext } from "@/lib/auth";
 import type {
   OrganizationDoc,
   OrganizationMembershipDoc,
   OrgRole,
 } from "@/types/models";
-import { email, money, optText, phone, reason } from "@/validators/common";
+import { email, money, objectId, optText, phone, reason } from "@/validators/common";
 import { requireOrgAccess } from "@/lib/auth";
 import { todayIn } from "@/lib/dates";
 import { createMember } from "./member.service";
@@ -113,7 +113,10 @@ export const UpdateOrgSchema = z.object({
         )
         .min(1)
         .max(100),
-      paymentMethods: z.array(z.enum(ALLOWED_PAYMENT_METHODS, { message: CASH_ONLY_MESSAGE })).min(1).max(20),
+      /** Ignored: the methods follow `upi` (kept so older app versions can still save settings). */
+      paymentMethods: z.array(z.enum(SUPPORTED_PAYMENT_METHODS, { message: UNSUPPORTED_METHOD_MESSAGE })).min(1).max(20),
+      /** Turn UPI on/off and choose the Mandal's UPI account members pay into. */
+      upi: z.object({ enabled: z.boolean(), accountId: objectId.nullable() }),
       installmentHorizonMonths: z.number().int().min(1).max(60),
       haptaTreatment: z.enum(["member_savings", "income"]),
       interest: z.object({
@@ -164,7 +167,8 @@ export function publicOrg(o: OrganizationDoc) {
     nameEnglishSuggestion: suggestEnglishName(o.name),
     status: o.status,
     statusReason: o.statusReason ?? null,
-    settings: o.settings,
+    // idempotent: also derives paymentMethods from settings.upi on freshly read documents
+    settings: withSettingsDefaults(o).settings,
     createdAt: o.createdAt,
   };
 }
@@ -504,7 +508,17 @@ export async function updateOrganization(ctx: OrgContext, input: z.infer<typeof 
       const used = await c.financialTransactions.countDocuments({ organizationId: ctx.orgId });
       if (used > 0) throw badRequest("The currency can't be changed after money has been recorded — amounts would not be converted");
     }
-    for (const [k, v] of Object.entries(settings)) if (v !== undefined) $set[`settings.${k}`] = v;
+    if (settings.upi) {
+      const { enabled, accountId } = settings.upi;
+      if (enabled && !accountId) throw badRequest("Choose the UPI account members should pay into");
+      if (accountId) {
+        const fa = await c.financialAccounts.findOne({ _id: accountId, organizationId: ctx.orgId });
+        if (!fa || fa.type !== "upi" || !fa.upiId) throw badRequest("Choose one of the Mandal's UPI accounts (with a UPI ID)");
+        if (!fa.isActive) throw badRequest(`Account "${fa.name}" is inactive`);
+      }
+    }
+    const { paymentMethods: _ignored, ...saved } = settings;
+    for (const [k, v] of Object.entries(saved)) if (v !== undefined) $set[`settings.${k}`] = v;
   }
   const after = await c.organizations.findOneAndUpdate({ _id: ctx.orgId }, { $set }, { returnDocument: "after" });
   await audit({

@@ -55,11 +55,11 @@ function clean(raw: RawBillReading, categoryKinds: Map<string, "expense" | "inco
   const kind = raw.categoryId ? categoryKinds.get(raw.categoryId) : undefined;
   const categoryId = kind === raw.type && raw.categoryId ? new ObjectId(raw.categoryId) : null;
   const merchant = raw.merchant?.replace(/\s+/g, " ").trim().slice(0, 80) || null;
-  return { isBill: raw.isBill, amountPaise: raw.isBill ? amountPaise : null, date: raw.isBill ? date : null, merchant: raw.isBill ? merchant : null, type: raw.type, categoryId: raw.isBill ? categoryId : null, walletKind: raw.isBill ? raw.walletKind : null };
+  return { isBill: raw.isBill, amountPaise: raw.isBill ? amountPaise : null, date: raw.isBill ? date : null, merchant: raw.isBill ? merchant : null, type: raw.type, categoryId: raw.isBill ? categoryId : null, walletKind: raw.isBill ? raw.walletKind : null, upiApp: raw.isBill ? (raw.upiApp ?? null) : null };
 }
 
 export const readingOut = (r: PersonalBillReading | null) =>
-  r ? { isBill: r.isBill, amount: r.amountPaise !== null ? paiseToRupeeString(r.amountPaise) : null, amountPaise: r.amountPaise, date: r.date, merchant: r.merchant, type: r.type, categoryId: r.categoryId, walletKind: r.walletKind } : null;
+  r ? { isBill: r.isBill, amount: r.amountPaise !== null ? paiseToRupeeString(r.amountPaise) : null, amountPaise: r.amountPaise, date: r.date, merchant: r.merchant, type: r.type, categoryId: r.categoryId, walletKind: r.walletKind, upiApp: r.upiApp ?? null } : null;
 
 /** Upload → keep → read. Counts towards this month's limit once the file is stored. */
 export async function scanBill(auth: AuthContext, file: File) {

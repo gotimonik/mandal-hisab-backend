@@ -15,6 +15,8 @@ import { cancelReceiptFor, issueReceipt } from "./receipt.service";
 import { requireAccount } from "./account.service";
 import { notifyMember, notifyRoles } from "./notification.service";
 import { copy } from "./notification-copy";
+import { assertUtrUnused, normalizeUtr, upiPayInfo } from "./upi.service";
+import { assertMethodEnabled, UTR_PATTERN } from "@/lib/org-defaults";
 
 export const RecordPaymentSchema = z
   .object({
@@ -129,7 +131,19 @@ async function resolveMember(orgId: ObjectId, memberId: string | null | undefine
 }
 
 function assertMethod(org: OrganizationDoc, method: string) {
-  if (!org.settings.paymentMethods.includes(method)) throw badRequest(`Payment method "${method}" is not enabled for this organization`);
+  assertMethodEnabled(org, method);
+}
+
+/**
+ * Staff entering a UPI payment: the reference is optional, but when it is a UTR it is stored in
+ * its plain 12-digit form and must not already be in the books.
+ */
+async function staffUpiReference(orgId: ObjectId, method: string, reference: string | undefined) {
+  if (method !== "upi" || !reference) return reference;
+  const utr = reference.replace(/[\s-]/g, "");
+  if (!UTR_PATTERN.test(utr)) return reference;
+  await assertUtrUnused(orgId, utr);
+  return utr;
 }
 
 async function findByKey(orgId: ObjectId, key: string) {
@@ -141,6 +155,7 @@ export async function recordPayment(ctx: OrgContext, input: z.infer<typeof Recor
   assertMethod(ctx.org, input.method);
   const existing = await findByKey(ctx.orgId, input.idempotencyKey);
   if (existing) return { payment: existing, duplicate: true };
+  input = { ...input, reference: await staffUpiReference(ctx.orgId, input.method, input.reference) };
 
   const member = await resolveMember(ctx.orgId, input.memberId);
   if (member && member.status !== "active" && input.kind === "hapta") throw badRequest("Member is not active");
@@ -221,6 +236,16 @@ export async function submitMemberPaymentRequest(ctx: OrgContext, input: z.infer
   if (!memberId) throw forbidden("Your login is not linked to a member record yet. Please contact your Mandal admin.");
   const existing = await findByKey(ctx.orgId, input.idempotencyKey);
   if (existing) return { payment: existing, duplicate: true };
+  // UPI: paid to the Mandal's UPI ID, so the UTR is needed to check it and the account is known
+  let upiAccountId: ObjectId | null = null;
+  if (input.method === "upi") {
+    const info = await upiPayInfo(ctx.org);
+    if (!info) throw badRequest("UPI is not set up for this Mandal");
+    const utr = normalizeUtr(input.reference);
+    await assertUtrUnused(ctx.orgId, utr);
+    input = { ...input, reference: utr };
+    upiAccountId = info.accountId;
+  }
   const isHapta = input.purpose === "hapta";
   if (!isHapta && !input.notes) throw badRequest("Say what this payment is for");
   let schemeId: ObjectId | null = null;
@@ -245,7 +270,7 @@ export async function submitMemberPaymentRequest(ctx: OrgContext, input: z.infer
     date: input.date,
     method: input.method,
     reference: input.reference,
-    accountId: null,
+    accountId: upiAccountId,
     schemeId,
     allocations,
     autoAllocated: isHapta,

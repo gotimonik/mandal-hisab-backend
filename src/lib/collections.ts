@@ -203,6 +203,8 @@ async function createIndexes() {
     c.payments.createIndex({ organizationId: 1, idempotencyKey: 1 }, { unique: true }),
     c.payments.createIndex({ organizationId: 1, status: 1, date: -1 }),
     c.payments.createIndex({ organizationId: 1, memberId: 1, date: -1 }),
+    // UPI transaction ids (UTR), to stop the same UPI payment being entered twice
+    c.payments.createIndex({ organizationId: 1, reference: 1 }, { partialFilterExpression: { method: "upi" }, name: "upi_reference" }),
     c.donations.createIndex({ organizationId: 1, idempotencyKey: 1 }, { unique: true }),
     c.donations.createIndex({ organizationId: 1, status: 1, date: -1 }),
     c.expenses.createIndex({ organizationId: 1, idempotencyKey: 1 }, { unique: true }),
@@ -266,6 +268,7 @@ async function createIndexes() {
     c.upadPaymentClaims.createIndex({ organizationId: 1, idempotencyKey: 1 }, { unique: true }),
     c.upadPaymentClaims.createIndex({ organizationId: 1, status: 1, createdAt: -1 }),
     c.upadPaymentClaims.createIndex({ organizationId: 1, memberId: 1, createdAt: -1 }),
+    c.upadPaymentClaims.createIndex({ organizationId: 1, reference: 1 }, { partialFilterExpression: { method: "upi" }, name: "upi_reference" }),
     c.meetings.createIndex({ organizationId: 1, idempotencyKey: 1 }, { unique: true }),
     c.meetings.createIndex({ organizationId: 1, date: 1, time: 1 }),
     c.upadInterestPayments.createIndex({ organizationId: 1, idempotencyKey: 1 }, { unique: true }),
