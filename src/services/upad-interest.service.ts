@@ -8,7 +8,7 @@ import { badRequest, conflict, isDuplicateKeyError, notFound } from "@/lib/error
 import { todayIn } from "@/lib/dates";
 import type { OrgContext } from "@/lib/auth";
 import type { FinancialAccountDoc, FundLoanDoc, FundLoanPaymentDoc, OrganizationDoc, UpadInterestPaymentDoc } from "@/types/models";
-import { ALLOWED_PAYMENT_METHODS, CASH_ONLY_MESSAGE } from "@/lib/org-defaults";
+import { isSupportedMethod, UNSUPPORTED_METHOD_MESSAGE } from "@/lib/org-defaults";
 import { dateOnly, idempotencyKey, money, optText } from "@/validators/common";
 import { INCOME_KEYS, MEMBER_FUNDS, UPAD_ADVANCE, faKey, postTransaction, reverseTransaction } from "./ledger.service";
 import { requireAccount } from "./account.service";
@@ -309,7 +309,7 @@ export async function memberUpadInterest(ctx: OrgContext, memberId: ObjectId) {
 export const MemberInterestPaymentSchema = z.object({
   amount: money(),
   date: dateOnly,
-  method: z.string().refine((m) => (ALLOWED_PAYMENT_METHODS as readonly string[]).includes(m), CASH_ONLY_MESSAGE).default("cash"),
+  method: z.string().refine(isSupportedMethod, UNSUPPORTED_METHOD_MESSAGE).default("cash"),
   reference: optText(100),
   note: optText(300),
   accountId: z.string().optional(),
@@ -330,7 +330,8 @@ export async function receiveMemberInterest(ctx: OrgContext, memberId: ObjectId,
   if (loans.every((l) => input.date < l.date)) throw badRequest("A payment can't be dated before the upad was given");
   await refreshDuesFor(ctx.org, loans);
 
-  let accountId = input.accountId;
+  // paid by UPI → into the Mandal's UPI account unless another is chosen
+  let accountId = input.accountId ?? (input.method === "upi" ? ctx.org.settings.upi.accountId?.toHexString() : undefined);
   if (!accountId) {
     const cash = await c.financialAccounts.findOne({ organizationId: ctx.orgId, type: "cash", isActive: true }, { sort: { createdAt: 1 } });
     if (!cash) throw badRequest("Create a cash account first");

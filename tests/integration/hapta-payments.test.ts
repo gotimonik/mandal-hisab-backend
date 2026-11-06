@@ -235,7 +235,7 @@ describe("payments", () => {
       }),
     );
     expect(req.payment.status).toBe("pending");
-    // cash only for now: any other method is refused
+    // UPI is refused until the Mandal turns it on (see upi.test.ts)
     const upi = await api("POST", `/orgs/${o.orgId}/me/payment-requests`, { token: userA.token, body: { amount: "1000", date: "2026-04-11", method: "upi", idempotencyKey: uniq("req") } });
     expect(upi.status).toBe(400);
     const pBVerified = (await ok(pay(o, o.admin.token, b.member._id, "1000"))).payment;

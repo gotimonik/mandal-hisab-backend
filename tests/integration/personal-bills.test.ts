@@ -79,6 +79,16 @@ describe("Personal Hisab bills", () => {
     expect(seenCategories.some((k) => k.id === groceries._id)).toBe(true);
   });
 
+  it("says which UPI app a payment screenshot is from", async () => {
+    const upiUser = await registerAndLogin("UPI Payer"); // own monthly scan count
+    reading = { isBill: true, amount: 250, date: today(), merchant: "Ramesh Patel", type: "expense", categoryId: null, walletKind: "upi", upiApp: "phonepe" };
+    const r = await ok(scan(bill(), upiUser.token));
+    expect(r.reading).toMatchObject({ walletKind: "upi", upiApp: "phonepe" });
+    // older readers that don't say → null, not missing
+    reading = { isBill: true, amount: 99, date: today(), merchant: "Tea stall", type: "expense", categoryId: null, walletKind: "cash" };
+    expect((await ok(scan(bill(), upiUser.token))).reading.upiApp).toBeNull();
+  });
+
   it("throws away readings that don't make sense", async () => {
     reading = { isBill: true, amount: -5, date: "2099-01-01", merchant: "Shop", type: "expense", categoryId: "65f000000000000000000000", walletKind: null };
     const r = await ok(scan(bill()));

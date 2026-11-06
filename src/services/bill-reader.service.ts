@@ -1,4 +1,5 @@
 import { env } from "@/config/env";
+import { UPI_APPS, type UpiApp } from "@/types/models";
 
 /**
  * Reads a bill (photo or PDF) with Claude's vision through the Anthropic Messages API and returns
@@ -23,6 +24,8 @@ export interface RawBillReading {
   type: "expense" | "income";
   categoryId: string | null;
   walletKind: "cash" | "upi" | "card" | "bank" | null;
+  /** a UPI screenshot: which app it is from (null/absent = not a UPI screenshot / can't tell) */
+  upiApp?: UpiApp | null;
 }
 
 export type BillReader = (input: { bytes: Uint8Array; contentType: string; categories: BillCategoryOption[]; today: string }) => Promise<RawBillReading>;
@@ -58,9 +61,14 @@ const TOOL = {
       merchant: { type: ["string", "null"], description: "Shop, company or person name, short (e.g. 'DMart', 'HP Petrol Pump', 'Ramesh Patel'). null if not shown." },
       direction: { type: "string", enum: ["expense", "income"], description: "expense if the person paid; income if they received money (e.g. a UPI 'received from' screenshot)." },
       category_id: { type: ["string", "null"], description: "The id of the best matching category from the list for this direction, or null if none fits." },
-      payment_method: { type: ["string", "null"], enum: ["cash", "upi", "card", "bank", null], description: "How it was paid, if the bill shows it." },
+      payment_method: { type: ["string", "null"], enum: ["cash", "upi", "card", "bank", null], description: "How it was paid, if the bill shows it. upi for any UPI payment screenshot (PhonePe, Google Pay, Paytm, BHIM …)." },
+      upi_app: {
+        type: ["string", "null"],
+        enum: [...UPI_APPS, null],
+        description: "For a UPI payment screenshot only: the app it was taken in, from its look and logo (phonepe, gpay = Google Pay, paytm, bhim, amazonpay; other for another UPI app). null if it is not a UPI screenshot or you can't tell.",
+      },
     },
-    required: ["is_bill", "total_amount", "currency", "date", "merchant", "direction", "category_id", "payment_method"],
+    required: ["is_bill", "total_amount", "currency", "date", "merchant", "direction", "category_id", "payment_method", "upi_app"],
   },
 } as const;
 
@@ -106,7 +114,7 @@ async function readWithClaude({ bytes, contentType, categories, today }: Paramet
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     // a bill the model can't open (corrupt image, password-protected PDF) is the bill's problem
-    if (res.status === 400 && /image|pdf|document|media/i.test(text)) return { isBill: false, amount: null, date: null, merchant: null, type: "expense", categoryId: null, walletKind: null };
+    if (res.status === 400 && /image|pdf|document|media/i.test(text)) return { isBill: false, amount: null, date: null, merchant: null, type: "expense", categoryId: null, walletKind: null, upiApp: null };
     throw new BillReaderError(`Bill reader failed (${res.status}): ${text.slice(0, 300)}`);
   }
   const json = (await res.json()) as { content?: { type: string; name?: string; input?: Record<string, unknown> }[] };
@@ -124,5 +132,6 @@ async function readWithClaude({ bytes, contentType, categories, today }: Paramet
     type: v.direction === "income" ? "income" : "expense",
     categoryId: typeof v.category_id === "string" ? v.category_id : null,
     walletKind: method === "cash" || method === "upi" || method === "card" || method === "bank" ? method : null,
+    upiApp: (UPI_APPS as readonly unknown[]).includes(v.upi_app) ? (v.upi_app as UpiApp) : null,
   };
 }

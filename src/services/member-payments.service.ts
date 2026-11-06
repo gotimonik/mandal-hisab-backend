@@ -13,6 +13,8 @@ import { aheadLimit, receiveMemberInterest } from "./upad-interest.service";
 import { lastOfMonth, monthOf } from "./monthly.service";
 import { notifyMember, notifyRoles } from "./notification.service";
 import { copy } from "./notification-copy";
+import { assertUtrUnused, normalizeUtr, upiPayInfo } from "./upi.service";
+import { assertMethodEnabled } from "@/lib/org-defaults";
 
 /**
  * "I have paid" — what a member can report paying, and the upad side of it.
@@ -76,6 +78,8 @@ export async function myPaymentOptions(ctx: OrgContext) {
     /** interest paid ahead, used first for the next interest due */
     upadAdvancePaise: (await c.members.findOne({ _id: memberId }, { projection: { upadAdvancePaise: 1 } }))?.upadAdvancePaise ?? 0,
     methods: ctx.org.settings.paymentMethods,
+    /** The Mandal's UPI ID to pay from a UPI app (null: UPI off) */
+    upi: await upiPayInfo(ctx.org).then((u) => (u ? { upiId: u.upiId, payeeName: u.payeeName } : null)),
   };
 }
 
@@ -99,10 +103,15 @@ export const UpadClaimSchema = z
 
 export async function submitUpadClaim(ctx: OrgContext, input: z.infer<typeof UpadClaimSchema>) {
   const memberId = memberOf(ctx);
-  if (!ctx.org.settings.paymentMethods.includes(input.method)) throw badRequest("Choose a valid payment method");
+  assertMethodEnabled(ctx.org, input.method);
   const c = await cols();
   const prior = await c.upadPaymentClaims.findOne({ organizationId: ctx.orgId, idempotencyKey: input.idempotencyKey });
   if (prior) return { claim: prior, duplicate: true };
+  if (input.method === "upi") {
+    const utr = normalizeUtr(input.reference);
+    await assertUtrUnused(ctx.orgId, utr);
+    input = { ...input, reference: utr };
+  }
   const all = input.loanId === "all";
   if (!all && !ObjectId.isValid(input.loanId)) throw notFound("Upad");
   const today = todayIn(ctx.org.settings.timezone);
@@ -290,19 +299,20 @@ export async function verifyUpadClaim(ctx: OrgContext, id: ObjectId, input: z.in
   if (claimed.modifiedCount !== 1) throw conflict("This payment was just changed — refresh and try again");
   try {
     const note = [`Reported by member`, claim.notes].filter(Boolean).join(": ");
+    const accountId = input.accountId; // a UPI claim defaults to the Mandal's UPI account
     const { payment } = claim.loanId
       ? await receiveFundLoanPayment(ctx, claim.loanId, {
           interestAmount: claim.interestPaise,
           principalAmount: claim.principalPaise,
           date: claim.date,
           note,
-          accountId: input.accountId,
+          accountId,
           method: claim.method,
           reference: claim.reference,
           idempotencyKey: `upadclaim:${id.toHexString()}`,
         })
       : // interest for all the member's upads at once (extra kept as advance)
-        await receiveMemberInterest(ctx, claim.memberId, { amount: claim.interestPaise, date: claim.date, note, accountId: input.accountId, method: claim.method, reference: claim.reference, idempotencyKey: `upadclaim:${id.toHexString()}` });
+        await receiveMemberInterest(ctx, claim.memberId, { amount: claim.interestPaise, date: claim.date, note, accountId, method: claim.method, reference: claim.reference, idempotencyKey: `upadclaim:${id.toHexString()}` });
     await c.upadPaymentClaims.updateOne({ _id: id }, { $set: { paymentId: payment._id, updatedAt: new Date() } });
     await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "upadClaim.verify", entityType: "upadPaymentClaim", entityId: id, after: { paymentId: payment._id } });
     await notifyMember(ctx.orgId, claim.memberId, { actorId: ctx.user._id, type: "upadClaim.verified", copy: copy("upadClaim.verified", { amountPaise: claim.interestPaise + claim.principalPaise }, ctx.org.settings.currency), link: `/org/${ctx.orgId}/receipts/${payment.receiptId}`, dedupeKey: `upadclaim-ok:${id}` });

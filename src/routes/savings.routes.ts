@@ -1,8 +1,9 @@
 import * as settlement from "@/services/settlement.service";
 import { z } from "zod";
 import { csvResponse, type Router } from "@/lib/http";
-import { parseObjectId } from "@/lib/auth";
+import { parseObjectId, type OrgContext } from "@/lib/auth";
 import { forbidden } from "@/lib/errors";
+import { assertMethodEnabled } from "@/lib/org-defaults";
 import { toCsv } from "@/lib/csv";
 import { reason } from "@/validators/common";
 import * as monthly from "@/services/monthly.service";
@@ -112,14 +113,17 @@ export function registerSavingsRoutes(r: Router) {
   });
   r.post("/orgs/:orgId/fund-loans/:id/payments", async (req) => {
     const ctx = await req.org("payments.record", W);
-    const res = await fl.receiveFundLoanPayment(ctx, parseObjectId(req.params.id, "Upad"), await req.body(fl.LoanPaymentSchema));
+    const res = await fl.receiveFundLoanPayment(ctx, parseObjectId(req.params.id, "Upad"), enabledMethod(ctx, await req.body(fl.LoanPaymentSchema)));
     // the member may have reported this same payment: close their claim so it isn't verified twice
     const settledClaimId = res.duplicate ? null : await mp.settleMatchingClaim(ctx, res.payment);
     return { ...res, settledClaimId };
   });
   /* interest for all of a member's upads at once; the extra is kept as their upad advance */
   r.get("/orgs/:orgId/members/:memberId/upad-interest", async (req) => ui.memberUpadInterest(await req.org("members.view"), parseObjectId(req.params.memberId, "Member")));
-  r.post("/orgs/:orgId/members/:memberId/upad-interest", async (req) => ui.receiveMemberInterest(await req.org("payments.record", W), parseObjectId(req.params.memberId, "Member"), await req.body(ui.MemberInterestPaymentSchema)));
+  r.post("/orgs/:orgId/members/:memberId/upad-interest", async (req) => {
+    const ctx = await req.org("payments.record", W);
+    return ui.receiveMemberInterest(ctx, parseObjectId(req.params.memberId, "Member"), enabledMethod(ctx, await req.body(ui.MemberInterestPaymentSchema)));
+  });
   r.post("/orgs/:orgId/upad-interest-payments/:id/reverse", async (req) => {
     const b = await req.body(z.object({ reason }));
     return ui.reverseInterestPayment(await req.org("transactions.adjust", W), parseObjectId(req.params.id, "Payment"), b.reason);
@@ -161,7 +165,10 @@ export function registerSavingsRoutes(r: Router) {
   r.get("/orgs/:orgId/settlement", async (req) => settlement.settlementPreview(await req.org("org.settings.manage")));
   r.post("/orgs/:orgId/settlement/waive-hapta", async (req) => settlement.waiveUnpaidHapta(await req.org("org.settings.manage", W), await req.body(settlement.WaiveSchema)));
   r.post("/orgs/:orgId/settlement/start", async (req) => settlement.startSettlement(await req.org("org.settings.manage", W), await req.body(settlement.StartSchema)));
-  r.post("/orgs/:orgId/settlement/payouts/:memberId", async (req) => settlement.payoutMember(await req.org("org.settings.manage", W), parseObjectId(req.params.memberId, "Member"), await req.body(settlement.PayoutSchema)));
+  r.post("/orgs/:orgId/settlement/payouts/:memberId", async (req) => {
+    const ctx = await req.org("org.settings.manage", W);
+    return settlement.payoutMember(ctx, parseObjectId(req.params.memberId, "Member"), enabledMethod(ctx, await req.body(settlement.PayoutSchema)));
+  });
   r.post("/orgs/:orgId/settlement/close", async (req) => settlement.closeMandal(await req.org("org.settings.manage", W), await req.body(settlement.CloseSchema)));
   r.post("/orgs/:orgId/upad-payments/:id/settle", async (req) => mp.settleUpadClaim(await req.org("payments.verify", W), parseObjectId(req.params.id, "Payment")));
   r.post("/orgs/:orgId/upad-payments/:id/verify", async (req) => mp.verifyUpadClaim(await req.org("payments.verify", W), parseObjectId(req.params.id, "Payment"), await req.body(mp.VerifyClaimSchema)));
@@ -197,4 +204,14 @@ export function registerSavingsRoutes(r: Router) {
     }
     return data;
   });
+}
+
+/**
+ * New money entries may only use a method the Mandal has on now (UPI only when turned on).
+ * Checked here, not in the services, so verifying a member's earlier UPI claim still works after
+ * UPI is turned off.
+ */
+function enabledMethod<T extends { method: string }>(ctx: OrgContext, body: T): T {
+  assertMethodEnabled(ctx.org, body.method);
+  return body;
 }
