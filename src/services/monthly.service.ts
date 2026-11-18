@@ -86,6 +86,78 @@ export async function setupMonthlyHapta(ctx: OrgContext, input: z.infer<typeof S
   return { schemeId: scheme._id, enrolled };
 }
 
+/**
+ * Rebuild the monthly hapta from `startMonth`: every month before it disappears and members are
+ * put on it again. Only safe while no hapta has been paid (callers check). `founders`: everyone
+ * active pays from the first month (nobody owes a joining amount); otherwise a member who joined
+ * later starts in their joining month and owes the joining amount as usual.
+ */
+export async function rebuildMonthlyHapta(ctx: OrgContext, opts: { startMonth: string; amountPaise?: number; dueDay?: number; founders: boolean }) {
+  const c = await cols();
+  const s = await primaryScheme(ctx.orgId);
+  if (!s) throw badRequest("Set up the monthly hapta first");
+  const start = firstOfMonth(opts.startMonth);
+  const amountPaise = opts.amountPaise ?? s.amountPaise;
+  const dueDay = opts.dueDay ?? s.dueDay ?? ctx.org.settings.monthlyHapta?.dueDay ?? 10;
+  await c.installments.deleteMany({ organizationId: ctx.orgId, schemeId: s._id });
+  await c.memberSchemeEnrollments.deleteMany({ organizationId: ctx.orgId, schemeId: s._id });
+  const amountChanged = amountPaise !== s.amountPaise;
+  await c.haptaSchemes.updateOne(
+    { _id: s._id },
+    {
+      $set: {
+        startDate: start,
+        dueDay,
+        amountPaise,
+        // overrides point at month numbers, which change; a new amount replaces any earlier changes
+        overrides: [],
+        ...(amountChanged ? { amountRevisions: [], description: `${formatMoney(amountPaise, ctx.org.settings.currency)} per member every month` } : {}),
+        updatedAt: new Date(),
+      },
+    },
+  );
+  const settings = { schemeId: s._id, amountPaise, dueDay, startDate: start };
+  await c.organizations.updateOne({ _id: ctx.orgId }, { $set: { "settings.monthlyHapta": settings, updatedAt: new Date() } });
+  ctx.org.settings.monthlyHapta = settings;
+
+  const members = await c.members.find({ organizationId: ctx.orgId, status: "active" }, { projection: { haptaShares: 1, joiningDate: 1 } }).toArray();
+  const startOf = (m: (typeof members)[number]) => (!opts.founders && m.joiningDate > lastOfMonth(opts.startMonth) ? firstOfMonth(monthOf(m.joiningDate)) : start);
+  const r = await enrollMembers(ctx, s._id, { members: members.map((m) => ({ memberId: m._id.toHexString(), amount: null, startDate: startOf(m), shares: m.haptaShares ?? 1 })) });
+  // joining amounts: founders owe none; with joining dates, whoever now starts late owes one
+  const onTime = members.filter((m) => startOf(m).getTime() === start.getTime()).map((m) => m._id);
+  if (onTime.length) await c.members.updateMany({ organizationId: ctx.orgId, _id: { $in: onTime }, "joining.status": "due" }, { $unset: { joining: "" } });
+  const late = members.filter((m) => startOf(m).getTime() !== start.getTime()).map((m) => m._id);
+  if (late.length) {
+    const { markJoiningDue } = await import("./membership.service");
+    await markJoiningDue(ctx.orgId, late);
+  }
+  return { schemeId: s._id, enrolled: r.enrolled, installmentsCreated: r.installmentsCreated, startMonth: opts.startMonth };
+}
+
+export const ChangeStartSchema = z.object({ startMonth: month, founders: z.boolean().default(true) });
+
+/** Move the month the hapta starts — only before any hapta has been collected. */
+export async function changeHaptaStart(ctx: OrgContext, input: z.infer<typeof ChangeStartSchema>) {
+  const s = await primaryScheme(ctx.orgId);
+  if (!s) throw badRequest("Set up the monthly hapta first");
+  if (ctx.org.settings.settlement) throw badRequest("The Mandal is being closed");
+  const end = ctx.org.settings.endMonth;
+  if (end && end < input.startMonth) throw badRequest("The Mandal ends before that month — change the end month first");
+  const c = await cols();
+  const ids = (await c.installments.find({ organizationId: ctx.orgId, schemeId: s._id }, { projection: { _id: 1 } }).toArray()).map((i) => i._id);
+  const [paid, payment] = await Promise.all([
+    c.installments.findOne({ organizationId: ctx.orgId, schemeId: s._id, $or: [{ paidPaise: { $gt: 0 } }, { penaltyPaidPaise: { $gt: 0 } }] }, { projection: { _id: 1 } }),
+    ids.length ? c.payments.findOne({ organizationId: ctx.orgId, status: { $in: ["pending", "verified"] }, "allocations.installmentId": { $in: ids } }, { projection: { _id: 1 } }) : null,
+  ]);
+  if (paid || payment) {
+    throw badRequest("Hapta has already been collected, so the start month can't move. If those entries were a mistake, reset the money first (Settings → Start the hisab afresh).");
+  }
+  const before = monthOf(s.startDate);
+  const r = await rebuildMonthlyHapta(ctx, { startMonth: input.startMonth, founders: input.founders });
+  await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "monthly_hapta.start_changed", entityType: "scheme", entityId: s._id, before: { startMonth: before }, after: { startMonth: input.startMonth, founders: input.founders } });
+  return r;
+}
+
 /** Change the monthly amount for future months. Paid / partly paid installments never change. */
 export async function changeMonthlyHapta(ctx: OrgContext, input: z.infer<typeof ChangeAmountSchema>) {
   const s = await primaryScheme(ctx.orgId);

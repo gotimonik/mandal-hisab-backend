@@ -1,4 +1,6 @@
 import * as settlement from "@/services/settlement.service";
+import * as openingImport from "@/services/opening-import.service";
+import * as moneyReset from "@/services/money-reset.service";
 import { z } from "zod";
 import { csvResponse, type Router } from "@/lib/http";
 import { parseObjectId, type OrgContext } from "@/lib/auth";
@@ -39,6 +41,7 @@ export function registerSavingsRoutes(r: Router) {
 
   /* ---------------- monthly hapta */
   r.post("/orgs/:orgId/monthly-hapta", async (req) => monthly.setupMonthlyHapta(await req.org("org.settings.manage", { write: true, allowPending: true }), await req.body(monthly.SetupSchema)));
+  r.post("/orgs/:orgId/monthly-hapta/start", async (req) => monthly.changeHaptaStart(await req.org("org.settings.manage", W), await req.body(monthly.ChangeStartSchema)));
   r.patch("/orgs/:orgId/monthly-hapta", async (req) => monthly.changeMonthlyHapta(await req.org("org.settings.manage", { write: true, allowPending: true }), await req.body(monthly.ChangeAmountSchema)));
   r.get("/orgs/:orgId/monthly", async (req) => monthly.monthView(await req.org("installments.view"), req.queryAs(monthly.MonthQuery)));
   r.post("/orgs/:orgId/monthly/collect", async (req) => monthly.quickCollect(await req.org("payments.record", W), await req.body(monthly.QuickCollectSchema)));
@@ -47,6 +50,14 @@ export function registerSavingsRoutes(r: Router) {
     const b = await req.body(z.object({ memberIds: z.array(z.string()).min(1).max(2000), startMonth: monthly.month.optional() }));
     return monthly.enrollInMonthlyHapta(ctx, b.memberIds.map((id) => parseObjectId(id, "Member")), b.startMonth);
   });
+
+  /* ---------------- bring an existing (paper) Mandal in */
+  r.get("/orgs/:orgId/opening-import", async (req) => openingImport.importStatus(await req.org("org.settings.manage")));
+  r.post("/orgs/:orgId/opening-import", async (req) => openingImport.importOpening(await req.org("org.settings.manage", W), await req.body(openingImport.OpeningImportSchema)));
+
+  /* ---------------- start the hisab afresh (keeps members) */
+  r.get("/orgs/:orgId/money-reset", async (req) => moneyReset.resetStatus(await req.org("org.settings.manage")));
+  r.post("/orgs/:orgId/money-reset", async (req) => moneyReset.resetMoney(await req.org("org.settings.manage", W), await req.body(moneyReset.MoneyResetSchema)));
 
   /* ---------------- member savings ledger */
   r.get("/orgs/:orgId/members/:id/ledger", async (req) => {

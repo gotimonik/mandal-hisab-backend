@@ -136,6 +136,25 @@ export interface OrganizationSettings {
   endMonth?: string | null;
   /** Closing & settlement progress (see settlement.service). */
   settlement?: SettlementState | null;
+  /** Set once the paper hisab of an existing Mandal has been brought in (opening-import.service). */
+  openingImport?: OpeningImportState | null;
+}
+
+/** What was brought in from the paper books, and when. */
+export interface OpeningImportState {
+  at: Date;
+  by: Id;
+  /** the paper books were closed at the end of this day */
+  cutoverDate: Date;
+  /** first hapta month kept in the app (YYYY-MM) */
+  haptaStartMonth: string;
+  members: number;
+  savingsPaise: number;
+  upadPaise: number;
+  interestDuePaise: number;
+  cashPaise: number;
+  mandalOwnPaise: number;
+  note?: string;
 }
 
 export interface SettlementState {

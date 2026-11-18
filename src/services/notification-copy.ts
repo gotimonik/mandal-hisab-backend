@@ -280,6 +280,16 @@ const COPY = {
     gu: (f) => ({ title: "તમને ઉપાડ મળ્યો", body: `${f.m("amountPaise")} ઉપાડ (${f.s("number")}). વ્યાજ: માસિક ${f.s("rate")}%, ${f.month("fromMonth")} થી.` }),
     hi: (f) => ({ title: "आपको उपाड़ मिला", body: `${f.m("amountPaise")} उपाड़ (${f.s("number")})। ब्याज: मासिक ${f.s("rate")}%, ${f.month("fromMonth")} से।` }),
   },
+  "org.moneyReset": {
+    en: (f) => ({ title: "Mandal hisab reset", body: `${f.s("actor")} cleared all hapta, upad and interest entries to start the hisab afresh. Members are kept; balances will be brought in again.` }),
+    gu: (f) => ({ title: "મંડળનો હિસાબ ફરી શરૂ", body: `${f.s("actor")} એ હિસાબ નવેસરથી શરૂ કરવા બધા હપ્તા, ઉપાડ અને વ્યાજની એન્ટ્રી કાઢી નાખી. સભ્યો એ જ છે; બાકી રકમ ફરીથી ઉમેરાશે.` }),
+    hi: (f) => ({ title: "मंडल का हिसाब फिर से शुरू", body: `${f.s("actor")} ने हिसाब नए सिरे से शुरू करने के लिए सभी हप्ता, उपाड़ और ब्याज की एंट्री हटा दीं। सदस्य वही हैं; बकाया रकम फिर से जोड़ी जाएगी।` }),
+  },
+  "org.removedOnReset": {
+    en: (f) => ({ title: `Removed from ${f.s("mandal")}`, body: `${f.s("actor")} restarted the Mandal's hisab and removed all members. Your account is fine — ask the admin for a new invitation if you should be in it.` }),
+    gu: (f) => ({ title: `${f.s("mandal")} માંથી દૂર`, body: `${f.s("actor")} એ મંડળનો હિસાબ નવેસરથી શરૂ કર્યો અને બધા સભ્યો દૂર કર્યા. તમારું એકાઉન્ટ સલામત છે — તમે મંડળમાં હોવ તો એડમિન પાસે નવું આમંત્રણ માગો.` }),
+    hi: (f) => ({ title: `${f.s("mandal")} से हटाया गया`, body: `${f.s("actor")} ने मंडल का हिसाब नए सिरे से शुरू किया और सभी सदस्य हटा दिए। आपका खाता सुरक्षित है — मंडल में होना हो तो एडमिन से नया निमंत्रण माँगें।` }),
+  },
   "fundLoan.announced": {
     en: (f) => ({ title: "Upad given", body: `${f.s("member")} took ${f.m("amountPaise")} upad from the Mandal fund. Cash available now: ${f.m("availablePaise")}.` }),
     gu: (f) => ({ title: "ઉપાડ આપ્યો", body: `${f.s("member")} એ મંડળના ફંડમાંથી ${f.m("amountPaise")} ઉપાડ લીધો. હવે ઉપલબ્ધ રોકડ: ${f.m("availablePaise")}.` }),
