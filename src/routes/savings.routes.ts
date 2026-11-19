@@ -1,6 +1,7 @@
 import * as settlement from "@/services/settlement.service";
 import * as openingImport from "@/services/opening-import.service";
 import * as moneyReset from "@/services/money-reset.service";
+import { membersSheet } from "@/services/members-sheet.service";
 import { z } from "zod";
 import { csvResponse, type Router } from "@/lib/http";
 import { parseObjectId, type OrgContext } from "@/lib/auth";
@@ -53,7 +54,11 @@ export function registerSavingsRoutes(r: Router) {
 
   /* ---------------- bring an existing (paper) Mandal in */
   r.get("/orgs/:orgId/opening-import", async (req) => openingImport.importStatus(await req.org("org.settings.manage")));
+  r.post("/orgs/:orgId/opening-import/interest-in-savings", async (req) => openingImport.setInterestInSavings(await req.org("org.settings.manage", W), await req.body(openingImport.InterestInSavingsSchema)));
   r.post("/orgs/:orgId/opening-import", async (req) => openingImport.importOpening(await req.org("org.settings.manage", W), await req.body(openingImport.OpeningImportSchema)));
+
+  /* ---------------- hisab sheet: every member's savings, upad and dues, to share */
+  r.get("/orgs/:orgId/members-sheet", async (req) => membersSheet(await req.org("members.view")));
 
   /* ---------------- start the hisab afresh (keeps members) */
   r.get("/orgs/:orgId/money-reset", async (req) => moneyReset.resetStatus(await req.org("org.settings.manage")));

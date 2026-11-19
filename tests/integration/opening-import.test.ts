@@ -114,6 +114,36 @@ describe("bringing in an existing Mandal from paper", () => {
     const cl = loans.find((l: { member: { name: string } }) => l.member.name === "Chetna Shah");
     expect(cl).toMatchObject({ monthlyRate: "2", interestDuePaise: 20_000 });
 
+    // the members list shows what each still owes on upad
+    const listed = await ok(api("GET", `/orgs/${o.orgId}/members`, { token: o.admin.token }));
+    expect(listed.items.find((m: { name: string }) => m.name === "Bhavesh Patel")).toMatchObject({ upadPaise: 2_000_000, upadInterestDuePaise: 90_000 });
+    expect(listed.items.find((m: { _id: string }) => m._id === adminMemberId)).toMatchObject({ upadPaise: 0, upadInterestDuePaise: 0 });
+
+    // the hisab sheet to share in the group: per member, totals and each share (5 shares)
+    const sheet = await ok(api("GET", `/orgs/${o.orgId}/members-sheet`, { token: o.admin.token }));
+    expect(sheet.rows).toHaveLength(3);
+    expect(sheet.totals).toMatchObject({ shares: 5, savingsPaise: 9_000_000, upadPaise: 3_000_000, interestDuePaise: 110_000 });
+    expect(sheet.cashPaise).toBe(10_200_000);
+    expect(sheet.totalPaise).toBe(sheet.cashPaise + 3_000_000 + sheet.totals.haptaDuePaise + 110_000);
+    expect(sheet).toMatchObject({ members: 3, byShares: true, parts: 5, eachPaise: Math.floor(sheet.totalPaise / 5) });
+    expect(sheet.rows.find((r: { name: string }) => r.name === "Bhavesh Patel")).toMatchObject({ shares: 2, savingsPaise: 3_600_000, upadPaise: 2_000_000, interestDuePaise: 90_000 });
+    const bh = sheet.rows.find((r: { name: string }) => r.name === "Bhavesh Patel");
+    expect(bh.sharePaise).toBe(sheet.eachPaise * 2);
+    expect(bh.netPaise).toBe(bh.sharePaise - 2_000_000 - 90_000 - bh.haptaDuePaise);
+    // the nets add up to the cash in hand (less the rounding of each share)
+    expect(sheet.cashPaise - sheet.netTotalPaise).toBeGreaterThanOrEqual(0);
+    expect(sheet.cashPaise - sheet.netTotalPaise).toBeLessThan(5);
+
+    // cash given to someone to keep: a second cash account + a transfer with a note
+    const keeper = await ok(api("POST", `/orgs/${o.orgId}/accounts`, { token: o.admin.token, body: { name: "Cash — Rameshbhai", type: "cash" } }));
+    const cashAcc = (await ok(api("GET", `/orgs/${o.orgId}/accounts`, { token: o.admin.token }))).find((a: { type: string; name: string }) => a.type === "cash" && a.name !== "Cash — Rameshbhai");
+    await ok(api("POST", `/orgs/${o.orgId}/transfers`, { token: o.admin.token, body: { fromAccountId: cashAcc._id, toAccountId: keeper._id, amount: "48000", date: todayIST(), notes: "given to Rameshbhai to keep", idempotencyKey: uniq("tr") } }));
+    const sheet2 = await ok(api("GET", `/orgs/${o.orgId}/members-sheet`, { token: o.admin.token }));
+    expect(sheet2.cashPaise).toBe(10_200_000); // the total doesn't change
+    expect(sheet2.holders.find((h: { name: string }) => h.name === "Cash — Rameshbhai").balancePaise).toBe(4_800_000);
+    expect(sheet2.holders.reduce((s: number, h: { balancePaise: number }) => s + h.balancePaise, 0)).toBe(10_200_000);
+    expect(sheet2.movements).toEqual([expect.objectContaining({ from: cashAcc.name, to: "Cash — Rameshbhai", amountPaise: 4_800_000, note: "given to Rameshbhai to keep" })]);
+
     // and the brought-forward interest is collected like any other
     await ok(api("POST", `/orgs/${o.orgId}/fund-loans/${bl._id}/payments`, { token: o.admin.token, body: { interestAmount: "600", date: todayIST(), idempotencyKey: uniq("flp") } }));
     const d2 = await ok(api("GET", `/orgs/${o.orgId}/dashboard`, { token: o.admin.token }));

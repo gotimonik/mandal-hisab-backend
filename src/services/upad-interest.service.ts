@@ -10,7 +10,7 @@ import type { OrgContext } from "@/lib/auth";
 import type { FinancialAccountDoc, FundLoanDoc, FundLoanPaymentDoc, OrganizationDoc, UpadInterestPaymentDoc } from "@/types/models";
 import { isSupportedMethod, UNSUPPORTED_METHOD_MESSAGE } from "@/lib/org-defaults";
 import { dateOnly, idempotencyKey, money, optText } from "@/validators/common";
-import { INCOME_KEYS, MEMBER_FUNDS, UPAD_ADVANCE, faKey, postTransaction, reverseTransaction } from "./ledger.service";
+import { INCOME_KEYS, MEMBER_FUNDS, OPENING_EQUITY, UPAD_ADVANCE, faKey, postTransaction, reverseTransaction } from "./ledger.service";
 import { requireAccount } from "./account.service";
 import { postMemberEntry } from "./member-ledger.service";
 import { rateInterest } from "./member-interest.service";
@@ -41,6 +41,8 @@ const advanceOf = (m: { upadAdvancePaise?: number } | null | undefined) => m?.up
 interface Plan {
   loan: FundLoanDoc;
   takePaise: number;
+  /** part of takePaise on dues already in members' savings (brought forward): not shared again */
+  creditedPaise: number;
   allocations: FundLoanPaymentDoc["allocations"];
 }
 
@@ -75,8 +77,9 @@ async function allocate(orgId: ObjectId, loans: FundLoanDoc[], amount: number, s
     );
     if (r.modifiedCount !== 1) throw conflict("The interest due changed — please try again");
     const key = d.loanId.toHexString();
-    const plan = plans.get(key) ?? { loan: loans.find((l) => l._id.equals(d.loanId))!, takePaise: 0, allocations: [] };
+    const plan = plans.get(key) ?? { loan: loans.find((l) => l._id.equals(d.loanId))!, takePaise: 0, creditedPaise: 0, allocations: [] };
     plan.takePaise += take;
+    if (d.inSavings) plan.creditedPaise += take;
     plan.allocations.push({ dueId: d._id, period: d.period, amountPaise: take });
     plans.set(key, plan);
     left -= take;
@@ -132,8 +135,12 @@ async function settle(input: SettleInput, session: ClientSession): Promise<UpadI
   const groupId = new ObjectId();
   const savings = org.settings.haptaTreatment === "member_savings";
   const interest = input.plans.reduce((s, p) => s + p.takePaise, 0);
+  const credited = input.plans.reduce((s, p) => s + p.creditedPaise, 0);
   const withIds = await Promise.all(
-    input.plans.map(async (p) => ({ ...p, paymentId: new ObjectId(), shareMap: savings && p.takePaise > 0 ? await interestShares(org._id, p.takePaise, member._id, session) : new Map<string, number>() })),
+    input.plans.map(async (p) => {
+      const shared = p.takePaise - p.creditedPaise;
+      return { ...p, paymentId: new ObjectId(), shareMap: savings && shared > 0 ? await interestShares(org._id, shared, member._id, session) : new Map<string, number>() };
+    }),
   );
 
   const lines = [
@@ -141,9 +148,10 @@ async function settle(input: SettleInput, session: ClientSession): Promise<UpadI
     ...(input.advanceUsedPaise > 0 ? [{ accountKey: UPAD_ADVANCE, debitPaise: input.advanceUsedPaise, memberId: member._id }] : []),
     ...(savings
       ? withIds.flatMap((p) => [...p.shareMap.entries()].map(([mid, amt]) => ({ accountKey: MEMBER_FUNDS, creditPaise: amt, memberId: new ObjectId(mid) })))
-      : interest > 0
-        ? [{ accountKey: INCOME_KEYS.interest, creditPaise: interest }]
+      : interest - credited > 0
+        ? [{ accountKey: INCOME_KEYS.interest, creditPaise: interest - credited }]
         : []),
+    ...(credited > 0 ? [{ accountKey: OPENING_EQUITY, creditPaise: credited }] : []),
     ...(input.advanceAddedPaise > 0 ? [{ accountKey: UPAD_ADVANCE, creditPaise: input.advanceAddedPaise, memberId: member._id }] : []),
   ];
   const what = [

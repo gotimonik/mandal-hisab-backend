@@ -74,6 +74,11 @@ export const OpeningImportSchema = z.object({
   haptaDueDay: z.coerce.number().int().min(1).max(28).default(10),
   /** default upad rate (% per month) for rows that don't give one; also saved as the Mandal default */
   upadRate: rateString.optional(),
+  /**
+   * The unpaid upad interest has already been added to members' savings on paper: when it is
+   * collected it only adds to cash and is not shared out to members again.
+   */
+  interestInSavings: z.boolean().default(false),
   note: optText(300),
   members: z.array(MemberRow).min(1, "Add at least one member").max(MAX_MEMBERS),
   dryRun: z.boolean().default(true),
@@ -209,7 +214,8 @@ export async function importOpening(ctx: OrgContext, input: OpeningImportInput) 
     mandalOwnPaise: 0,
     haptaPerMonthPaise: 0,
   };
-  totals.mandalOwnPaise = totals.cashPaise + totals.upadPaise - totals.savingsPaise;
+  // interest already in members' savings is money still to come in for that
+  totals.mandalOwnPaise = totals.cashPaise + totals.upadPaise + (input.interestInSavings ? totals.interestDuePaise : 0) - totals.savingsPaise;
   totals.haptaPerMonthPaise = totals.shares * input.haptaAmount;
   if (totals.mandalOwnPaise < 0) {
     warnings.push({ row: 0, message: "Cash + upad is less than members' savings — the Mandal is short. Check the figures; if it's right, the shortfall shows as a loss." });
@@ -235,7 +241,10 @@ export async function importOpening(ctx: OrgContext, input: OpeningImportInput) 
   for (const r of rows) {
     if (r.match) {
       const set: Record<string, unknown> = { updatedAt: new Date() };
+      // brought in = a member on the closing date: a joining date after it (e.g. set from a hapta
+      // that was to start next month) moves back to the closing date
       if (r.input.joiningDate) set.joiningDate = r.input.joiningDate;
+      else if (r.match.joiningDate > cutover) set.joiningDate = cutover;
       const update: Record<string, unknown> = { $set: set };
       if (r.input.shares > 1) set.haptaShares = r.input.shares;
       else update.$unset = { haptaShares: "" };
@@ -278,6 +287,7 @@ export async function importOpening(ctx: OrgContext, input: OpeningImportInput) 
     interestDuePaise: totals.interestDuePaise,
     cashPaise: totals.cashPaise,
     mandalOwnPaise: totals.mandalOwnPaise,
+    ...(input.interestInSavings && totals.interestDuePaise > 0 ? { interestInSavings: true } : {}),
     note: input.note,
   };
   const loans: FundLoanDoc[] = await withTransaction(async (session) => {
@@ -387,7 +397,7 @@ export async function importOpening(ctx: OrgContext, input: OpeningImportInput) 
         if (u.interestDue > 0) {
           // interest owed up to the cutover: one due in the cutover month, paid like any other
           await c.fundLoanDues.insertOne(
-            { _id: new ObjectId(), organizationId: ctx.orgId, loanId: id, memberId, period: monthOf(cutover), dueDate: cutover, principalBasisPaise: u.amount, monthlyRate: rate, interestPaise: u.interestDue, paidPaise: 0, createdAt: now, updatedAt: now },
+            { _id: new ObjectId(), organizationId: ctx.orgId, loanId: id, memberId, period: monthOf(cutover), dueDate: cutover, principalBasisPaise: u.amount, monthlyRate: rate, interestPaise: u.interestDue, paidPaise: 0, ...(input.interestInSavings ? { inSavings: true } : {}), createdAt: now, updatedAt: now },
             { session },
           );
         }
@@ -402,4 +412,38 @@ export async function importOpening(ctx: OrgContext, input: OpeningImportInput) 
   // interest from the month after the cutover up to now
   if (loans.length) await refreshDuesFor(ctx.org, loans);
   return { ...preview, imported: true };
+}
+
+/* ------------------------------------------------------------------ after the import */
+
+export const InterestInSavingsSchema = z.object({ inSavings: z.boolean() });
+
+/**
+ * Say (after the import) whether the brought-forward unpaid upad interest was already added to
+ * members' savings on paper. Only for interest not yet collected — once some is paid the books
+ * would no longer match.
+ */
+export async function setInterestInSavings(ctx: OrgContext, input: z.infer<typeof InterestInSavingsSchema>) {
+  const done = ctx.org.settings.openingImport;
+  if (!done) throw badRequest("The old hisab hasn't been brought in yet");
+  const c = await cols();
+  const loans = await c.fundLoans.find({ organizationId: ctx.orgId, idempotencyKey: { $regex: "^opening:" } }, { projection: { _id: 1 } }).toArray();
+  const q = { organizationId: ctx.orgId, loanId: { $in: loans.map((l) => l._id) }, period: monthOf(done.cutoverDate) };
+  const dues = await c.fundLoanDues.find(q).toArray();
+  if (!dues.length) throw badRequest("No unpaid interest was brought in");
+  if (dues.some((d) => d.paidPaise > 0)) throw badRequest("Some of the brought-in interest has already been collected — this can only be changed before any of it is paid");
+  const interest = dues.reduce((s, d) => s + d.interestPaise, 0);
+  await withTransaction(async (session) => {
+    await c.fundLoanDues.updateMany(q, input.inSavings ? { $set: { inSavings: true, updatedAt: new Date() } } : { $unset: { inSavings: "" }, $set: { updatedAt: new Date() } }, { session });
+    const own = done.cashPaise + done.upadPaise + (input.inSavings ? interest : 0) - done.savingsPaise;
+    await c.organizations.updateOne(
+      { _id: ctx.orgId },
+      input.inSavings
+        ? { $set: { "settings.openingImport.interestInSavings": true, "settings.openingImport.mandalOwnPaise": own, updatedAt: new Date() } }
+        : { $unset: { "settings.openingImport.interestInSavings": "" }, $set: { "settings.openingImport.mandalOwnPaise": own, updatedAt: new Date() } },
+      { session },
+    );
+    await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "org.opening_import.interest_in_savings", entityType: "organization", entityId: ctx.orgId, after: { inSavings: input.inSavings, interestPaise: interest, dues: dues.length } }, session);
+  });
+  return { ok: true, inSavings: input.inSavings, interestPaise: interest, dues: dues.length };
 }

@@ -11,6 +11,7 @@ import { dateOnly, idempotencyKey, money, optText } from "@/validators/common";
 import { createScheme, enrollMembers, reviseAmount } from "./scheme.service";
 import { deriveStatus } from "./schedule";
 import { recordPayment } from "./payment.service";
+import { memberOrder } from "./member.service";
 
 /**
  * The Mandal's monthly hapta: one primary monthly scheme per Mandal, driven by
@@ -264,14 +265,14 @@ export async function monthView(ctx: OrgContext, q: z.infer<typeof MonthQuery>) 
   const sm = new Map(schemes.map((s) => [s._id.toHexString(), s]));
   // round 3: members, payments and not-enrolled members, in parallel
   const [members, payments, notEnrolled] = await Promise.all([
-    c.members.find({ organizationId: ctx.orgId, _id: { $in: insts.map((i) => i.memberId) } }, { projection: { name: 1, membershipNumber: 1, phone: 1 } }).toArray(),
+    c.members.find({ organizationId: ctx.orgId, _id: { $in: insts.map((i) => i.memberId) } }, { projection: { name: 1, membershipNumber: 1, phone: 1, position: 1 } }).toArray(),
     c.payments
       .find({ organizationId: ctx.orgId, status: "verified", "allocations.installmentId": { $in: insts.map((i) => i._id) } }, { projection: { date: 1, allocations: 1, recordedBy: 1, verifiedBy: 1, receiptId: 1, amountPaise: 1 } })
       .sort({ date: 1 })
       .toArray(),
     // Active members who have no installment this month (not enrolled / joined later).
     schemeId && primary && schemeId.equals(primary._id)
-      ? c.members.find({ organizationId: ctx.orgId, status: "active", _id: { $nin: insts.map((i) => i.memberId) } }, { projection: { name: 1, membershipNumber: 1 } }).sort({ name: 1 }).toArray()
+      ? c.members.find({ organizationId: ctx.orgId, status: "active", _id: { $nin: insts.map((i) => i.memberId) } }, { projection: { name: 1, membershipNumber: 1 } }).sort({ position: 1, name: 1 }).toArray()
       : Promise.resolve([]),
   ]);
   const mm = new Map(members.map((x) => [x._id.toHexString(), x]));
@@ -305,7 +306,8 @@ export async function monthView(ctx: OrgContext, q: z.infer<typeof MonthQuery>) 
         payments: ps.map((p) => ({ _id: p._id, date: p.date, receiptId: p.receiptId, amountPaise: p.allocations.filter((a) => a.installmentId.equals(i._id)).reduce((s, a) => s + a.amountPaise + a.penaltyPaise, 0) })),
       };
     })
-    .sort((a, b) => (a.member?.name ?? "").localeCompare(b.member?.name ?? ""));
+    // the Mandal's own order of members (by name when it has none)
+    .sort((a, b) => memberOrder(a.member, b.member));
 
 
   const active = rows.filter((r) => r.state === "active");

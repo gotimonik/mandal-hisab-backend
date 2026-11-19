@@ -2,7 +2,8 @@ import { ObjectId } from "mongodb";
 import { z } from "zod";
 import { cols } from "@/lib/collections";
 import { audit } from "@/lib/audit";
-import { conflict, isDuplicateKeyError, notFound } from "@/lib/errors";
+import { badRequest, conflict, isDuplicateKeyError, notFound } from "@/lib/errors";
+import { latinName } from "@/lib/transliterate";
 import { parseCsv } from "@/lib/csv";
 import { todayIn } from "@/lib/dates";
 import type { OrgContext } from "@/lib/auth";
@@ -46,8 +47,49 @@ export const MemberListQuery = z.object({
   pageSize: z.coerce.number().int().min(1).max(200).default(25),
 });
 
-function searchText(m: Pick<MemberDoc, "name" | "membershipNumber" | "phone" | "email">) {
-  return [m.name, m.membershipNumber, m.phone, m.email].filter(Boolean).join(" ").toLowerCase();
+/** Lower-cased words a member is found by: a Gujarati / Hindi name also by its English spellings. */
+function searchText(m: Pick<MemberDoc, "name" | "membershipNumber" | "phone" | "email" | "nameEnglish">) {
+  return [m.name, m.nameEnglish, latinName(m.name), m.membershipNumber, m.phone, m.email].filter(Boolean).join(" ").toLowerCase();
+}
+
+const INDIC = /[\u0900-\u097F\u0A80-\u0AFF]/;
+
+export const RenameSchema = z.object({
+  items: z
+    .array(z.object({ memberId: z.string(), name: z.string().trim().min(2, "Enter the member's name").max(120) }))
+    .min(1, "Nothing to rename")
+    .max(2000),
+});
+
+/**
+ * Change many members' names at once (e.g. to Gujarati). When an English name becomes a
+ * Gujarati / Hindi one, the English one is kept as `nameEnglish`, so searching "abhishek"
+ * still finds "અભિષેક ગોટી".
+ */
+export async function renameMembers(ctx: OrgContext, input: z.infer<typeof RenameSchema>) {
+  const c = await cols();
+  const ids = input.items.map((i) => {
+    if (!ObjectId.isValid(i.memberId)) throw badRequest("Invalid member");
+    return new ObjectId(i.memberId);
+  });
+  const members = await c.members.find({ organizationId: ctx.orgId, _id: { $in: ids } }).toArray();
+  const byId = new Map(members.map((m) => [m._id.toHexString(), m]));
+  const changes: { id: ObjectId; from: string; to: string }[] = [];
+  const now = new Date();
+  for (const it of input.items) {
+    const m = byId.get(it.memberId);
+    if (!m) throw notFound("Member");
+    const name = it.name.replace(/\s+/g, " ");
+    if (name === m.name) continue;
+    const nameEnglish = m.nameEnglish ?? (!INDIC.test(m.name) && INDIC.test(name) ? m.name : null);
+    const next = { ...m, name, nameEnglish };
+    await c.members.updateOne({ _id: m._id, organizationId: ctx.orgId }, { $set: { name, nameEnglish, searchText: searchText(next), updatedAt: now } });
+    changes.push({ id: m._id, from: m.name, to: name });
+  }
+  if (changes.length) {
+    await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "member.rename", entityType: "member", after: { renamed: changes.length, names: changes.map((x) => `${x.from} → ${x.to}`) } });
+  }
+  return { renamed: changes.length };
 }
 
 async function autoNumber(orgId: ObjectId) {
@@ -58,6 +100,8 @@ async function autoNumber(orgId: ObjectId) {
 export async function createMember(ctx: OrgContext, input: MemberInput) {
   const c = await cols();
   const now = new Date();
+  // once members have been put in order, a new member goes at the end
+  const last = await c.members.findOne({ organizationId: ctx.orgId, position: { $exists: true } }, { sort: { position: -1 }, projection: { position: 1 } });
   for (let attempt = 0; attempt < 5; attempt++) {
     const membershipNumber = input.membershipNumber ?? (await autoNumber(ctx.orgId));
     const doc: MemberDoc = {
@@ -73,6 +117,7 @@ export async function createMember(ctx: OrgContext, input: MemberInput) {
       userId: null,
       notes: input.notes,
       ...(input.haptaShares && input.haptaShares > 1 ? { haptaShares: input.haptaShares } : {}),
+      ...(last ? { position: (last.position ?? 0) + 1 } : {}),
       searchText: "",
       createdAt: now,
       updatedAt: now,
@@ -135,7 +180,8 @@ export async function listMembers(ctx: OrgContext, q: z.infer<typeof MemberListQ
   const [items, total] = await Promise.all([
     c.members
       .find(filter, { projection: { searchText: 0 } })
-      .sort({ name: 1, _id: 1 })
+      // the Mandal's own order when it has one (members without a place: by name)
+      .sort({ position: 1, name: 1, _id: 1 })
       .skip((q.page - 1) * q.pageSize)
       .limit(q.pageSize)
       .toArray(),
@@ -157,12 +203,36 @@ export async function listMembers(ctx: OrgContext, q: z.infer<typeof MemberListQ
     ])
     .toArray();
   const dueMap = new Map(dues.map((d) => [d._id.toHexString(), d]));
+  // Upad still owed and its unpaid interest, for the same members (dues brought up to date first)
+  const { refreshFundLoanDues } = await import("./fund-loan.service");
+  await refreshFundLoanDues(ctx.org);
+  const [loans, interest] = await Promise.all([
+    c.fundLoans
+      .aggregate<{ _id: ObjectId; owed: number }>([{ $match: { organizationId: ctx.orgId, memberId: { $in: ids }, status: "active" } }, { $group: { _id: "$memberId", owed: { $sum: "$outstandingPaise" } } }])
+      .toArray(),
+    c.fundLoanDues
+      .aggregate<{ _id: ObjectId; due: number }>([
+        { $match: { organizationId: ctx.orgId, memberId: { $in: ids }, $expr: { $lt: ["$paidPaise", "$interestPaise"] } } },
+        { $group: { _id: "$memberId", due: { $sum: { $subtract: ["$interestPaise", "$paidPaise"] } } } },
+      ])
+      .toArray(),
+  ]);
+  const loanMap = new Map(loans.map((l) => [l._id.toHexString(), l.owed]));
+  const interestMap = new Map(interest.map((d) => [d._id.toHexString(), d.due]));
   return {
-    items: items.map((m) => ({
-      ...m,
-      outstandingPaise: dueMap.get(m._id.toHexString())?.outstanding ?? 0,
-      dueInstallments: dueMap.get(m._id.toHexString())?.overdue ?? 0,
-    })),
+    items: items.map((m) => {
+      const k = m._id.toHexString();
+      return {
+        ...m,
+        /** unpaid hapta (incl. late fees) due so far */
+        outstandingPaise: dueMap.get(k)?.outstanding ?? 0,
+        dueInstallments: dueMap.get(k)?.overdue ?? 0,
+        /** upad principal still owed */
+        upadPaise: loanMap.get(k) ?? 0,
+        /** upad interest due and not yet paid */
+        upadInterestDuePaise: interestMap.get(k) ?? 0,
+      };
+    }),
     total,
     page: q.page,
     pageSize: q.pageSize,
@@ -280,3 +350,38 @@ export async function importMembers(ctx: OrgContext, csvText: string, dryRun: bo
   return result;
 }
 
+
+/* ---------------------------------------------------------------- the Mandal's own order */
+
+export const OrderSchema = z.object({ memberIds: z.array(z.string()).min(1).max(5000) });
+
+/** In order of `position`, then name — for lists built in memory. */
+export function memberOrder(a: { position?: number; name?: string } | null | undefined, b: { position?: number; name?: string } | null | undefined) {
+  const pa = a?.position ?? Number.MAX_SAFE_INTEGER;
+  const pb = b?.position ?? Number.MAX_SAFE_INTEGER;
+  return pa - pb || (a?.name ?? "").localeCompare(b?.name ?? "");
+}
+
+/**
+ * Put the members in the Mandal's own order (dragged into place). Members not in the list keep
+ * their order after the listed ones, so every member ends up with a place.
+ */
+export async function reorderMembers(ctx: OrgContext, input: z.infer<typeof OrderSchema>) {
+  const c = await cols();
+  const all = await c.members.find({ organizationId: ctx.orgId }, { projection: { position: 1, name: 1 } }).toArray();
+  const byId = new Map(all.map((m) => [m._id.toHexString(), m]));
+  const seen = new Set<string>();
+  const ordered: ObjectId[] = [];
+  for (const id of input.memberIds) {
+    const m = byId.get(id);
+    if (!m) throw notFound("Member");
+    if (seen.has(id)) throw badRequest("A member is in the list twice");
+    seen.add(id);
+    ordered.push(m._id);
+  }
+  ordered.push(...all.filter((m) => !seen.has(m._id.toHexString())).sort(memberOrder).map((m) => m._id));
+  const now = new Date();
+  await c.members.bulkWrite(ordered.map((_id, i) => ({ updateOne: { filter: { _id, organizationId: ctx.orgId }, update: { $set: { position: i + 1, updatedAt: now } } } })));
+  await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "member.reorder", entityType: "member", after: { members: ordered.length } });
+  return { ordered: ordered.length };
+}

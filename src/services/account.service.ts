@@ -213,6 +213,8 @@ export async function transfer(ctx: OrgContext, input: z.infer<typeof TransferSc
         ],
         createdBy: ctx.user._id,
         sourceType: "transfer",
+        // the note on its own too (e.g. "given to Rameshbhai to keep"), for the hisab sheet
+        reason: input.notes,
         idempotencyKey: input.idempotencyKey,
       },
       session,

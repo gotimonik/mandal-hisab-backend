@@ -75,6 +75,8 @@ export function registerOrgRoutes(r: Router) {
     }
     return { ...member, invitation };
   });
+  r.post("/orgs/:orgId/members/order", async (req) => memberService.reorderMembers(await req.org("members.manage", W), await req.body(memberService.OrderSchema)));
+  r.post("/orgs/:orgId/members/rename", async (req) => memberService.renameMembers(await req.org("members.manage", W), await req.body(memberService.RenameSchema)));
   r.post("/orgs/:orgId/members/import", async (req) => {
     const ctx = await req.org("members.manage", W);
     const b = await req.body(z.object({ csv: z.string().min(1).max(2_000_000), dryRun: z.boolean().default(true) }));

@@ -67,3 +67,21 @@ describe("changing the month the hapta starts", () => {
     expect(r.error?.message).toMatch(/already been collected/);
   });
 });
+
+describe("a Mandal whose hapta starts next month", () => {
+  it("still shows the admin's statement (joining date in the future)", async () => {
+    const o = await createMandal("Future Start Mandal", addMonths(thisMonth(), 1));
+    const r = await api("GET", `/orgs/${o.orgId}/me/statement`, { token: o.admin.token });
+    expect(r.status).toBe(200);
+    expect(new Date(r.data.from).getTime()).toBeLessThanOrEqual(new Date(r.data.to).getTime());
+
+    // brought in from paper: the admin's joining date moves back to the closing date
+    const st = await ok(api("GET", `/orgs/${o.orgId}/opening-import`, { token: o.admin.token }));
+    const [y, m] = thisMonth().split("-").map(Number);
+    const cut = new Date(Date.UTC(y, m - 1, 0)).toISOString().slice(0, 10);
+    await ok(api("POST", `/orgs/${o.orgId}/opening-import`, { token: o.admin.token, body: { dryRun: false, cutoverDate: cut, cash: "1000", haptaAmount: "300", members: [{ memberId: st.members[0]._id, name: st.members[0].name, savings: "1000" }] } }));
+    const member = await ok(api("GET", `/orgs/${o.orgId}/members/${st.members[0]._id}`, { token: o.admin.token }));
+    expect(String(member.member.joiningDate).slice(0, 10)).toBe(cut);
+    expect((await api("GET", `/orgs/${o.orgId}/me/statement`, { token: o.admin.token })).status).toBe(200);
+  });
+});

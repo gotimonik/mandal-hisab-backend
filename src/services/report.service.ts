@@ -719,7 +719,10 @@ export async function memberStatement(ctx: OrgContext, memberIdRaw: string, q: R
   const c = await cols();
   const member = await c.members.findOne({ _id: memberId, organizationId: ctx.orgId }, { projection: { searchText: 0 } });
   if (!member) throw notFound("Member");
-  const { from, to } = range(ctx, { ...q, from: q.from ?? member.joiningDate });
+  // from the joining date by default — but never after the end of the statement (a joining date
+  // set in the future, e.g. from a hapta that starts next month, must not break it)
+  const end = q.to ?? todayIn(ctx.org.settings.timezone);
+  const { from, to } = range(ctx, { ...q, from: q.from ?? (member.joiningDate > end ? end : member.joiningDate) });
   const schemes = await c.haptaSchemes.find({ organizationId: ctx.orgId }, { projection: { name: 1 } }).toArray();
   const sm = new Map(schemes.map((s) => [s._id.toHexString(), s.name]));
 

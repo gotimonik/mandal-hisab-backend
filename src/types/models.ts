@@ -154,6 +154,8 @@ export interface OpeningImportState {
   interestDuePaise: number;
   cashPaise: number;
   mandalOwnPaise: number;
+  /** the unpaid upad interest was already added to members' savings on paper */
+  interestInSavings?: boolean;
   note?: string;
 }
 
@@ -259,6 +261,10 @@ export interface MemberDoc extends Timestamps {
   notes?: string;
   /** How many haptas this member pays each month (e.g. 3 × ₹500). Default 1. */
   haptaShares?: number;
+  /** the earlier English spelling, kept when the name is changed to Gujarati / Hindi (searched too) */
+  nameEnglish?: string | null;
+  /** place in the Mandal's own order of members (set by dragging them into order); lists follow it */
+  position?: number;
   searchText: string; // lower-cased name/number/phone for search
   /**
    * Cached member balance (paise) = Σ memberLedger credits − debits. Maintained ONLY by
@@ -907,6 +913,11 @@ export interface FundLoanDueDoc {
   monthlyRate: string;
   interestPaise: number;
   paidPaise: number;
+  /**
+   * Brought forward from a paper hisab where this interest was already added to members' savings:
+   * when it is paid it only adds to cash (Cr opening equity) — it is not shared out again.
+   */
+  inSavings?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }

@@ -10,7 +10,7 @@ import { parseDateOnly, todayIn } from "@/lib/dates";
 import type { OrgContext } from "@/lib/auth";
 import type { FundLoanDoc, FundLoanDueDoc, FundLoanPaymentDoc, OrganizationDoc } from "@/types/models";
 import { dateOnly, idempotencyKey, money, optText, rateString } from "@/validators/common";
-import { FUND_LOANS, INCOME_KEYS, MEMBER_FUNDS, UPAD_ADVANCE, faKey, fyNumber, postTransaction, reverseTransaction } from "./ledger.service";
+import { FUND_LOANS, INCOME_KEYS, MEMBER_FUNDS, OPENING_EQUITY, UPAD_ADVANCE, faKey, fyNumber, postTransaction, reverseTransaction } from "./ledger.service";
 import { aheadLimit, applyUpadAdvance, changeAdvance, reverseInterestPayment } from "./upad-interest.service";
 import { availableCashPaise, balanceOf, requireAccount } from "./account.service";
 import { postMemberEntry } from "./member-ledger.service";
@@ -318,6 +318,8 @@ export async function receiveFundLoanPayment(ctx: OrgContext, loanId: ObjectId, 
       const allocations: FundLoanPaymentDoc["allocations"] = [];
       let applied = input.interestAmount;
       let extra = 0;
+      // interest brought forward that members' savings already include: not shared out again
+      let credited = 0;
       if (input.interestAmount > 0) {
         const dues = await c.fundLoanDues.find({ organizationId: ctx.orgId, loanId: loan._id }, { session }).sort({ period: 1 }).toArray();
         const unpaid = dues.reduce((s, d) => s + d.interestPaise - d.paidPaise, 0);
@@ -341,9 +343,11 @@ export async function receiveFundLoanPayment(ctx: OrgContext, loanId: ObjectId, 
           );
           if (r.modifiedCount !== 1) throw conflict("The interest due changed — please try again");
           allocations.push({ dueId: d._id, period: d.period, amountPaise: take });
+          if (d.inSavings) credited += take;
           left -= take;
         }
       }
+      const shared = applied - credited;
 
       // principal returned
       if (input.principalAmount > 0) {
@@ -361,14 +365,15 @@ export async function receiveFundLoanPayment(ctx: OrgContext, loanId: ObjectId, 
       }
 
       // interest shares (only what was due: the advance isn't shared until it's used)
-      const shareMap = savings && applied > 0 ? await interestShares(ctx.orgId, applied, loan.memberId, session) : new Map<string, number>();
+      const shareMap = savings && shared > 0 ? await interestShares(ctx.orgId, shared, loan.memberId, session) : new Map<string, number>();
       const number = loan.number;
       const periods = allocations.map((a) => a.period);
       const periodText = periods.length ? (periods.length === 1 ? periods[0] : `${periods[0]} to ${periods[periods.length - 1]}`) : "";
       const total = input.interestAmount + input.principalAmount;
       const lines = [
         { accountKey: faKey(account._id), debitPaise: total },
-        ...(savings ? [...shareMap.entries()].map(([mid, amt]) => ({ accountKey: MEMBER_FUNDS, creditPaise: amt, memberId: new ObjectId(mid) })) : applied > 0 ? [{ accountKey: INCOME_KEYS.interest, creditPaise: applied }] : []),
+        ...(savings ? [...shareMap.entries()].map(([mid, amt]) => ({ accountKey: MEMBER_FUNDS, creditPaise: amt, memberId: new ObjectId(mid) })) : shared > 0 ? [{ accountKey: INCOME_KEYS.interest, creditPaise: shared }] : []),
+        ...(credited > 0 ? [{ accountKey: OPENING_EQUITY, creditPaise: credited }] : []),
         ...(extra > 0 ? [{ accountKey: UPAD_ADVANCE, creditPaise: extra, memberId: loan.memberId }] : []),
         ...(input.principalAmount > 0 ? [{ accountKey: FUND_LOANS, creditPaise: input.principalAmount, memberId: loan.memberId }] : []),
       ];
