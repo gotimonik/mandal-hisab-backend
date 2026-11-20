@@ -215,7 +215,7 @@ export async function adminDashboard(ctx: OrgContext) {
     fundLoans,
     totalMembers,
     wd,
-    [activeAgg, pendingPayments, pendingExpenses, pendingMemberships, accounts, recent, pendingUpadRequests, pendingUpadPayments],
+    [activeAgg, pendingPayments, pendingExpenses, pendingMemberships, accounts, recent, pendingUpadRequests, pendingUpadPayments, otherMembers, otherLogins],
   ] = await Promise.all([
     ledgerP,
     instP,
@@ -238,6 +238,9 @@ export async function adminDashboard(ctx: OrgContext) {
       c.financialTransactions.find({ organizationId: orgId }).sort({ date: -1, _id: -1 }).limit(10).toArray(),
       c.upadRequests.countDocuments({ organizationId: orgId, status: "pending" }),
       c.upadPaymentClaims.countDocuments({ organizationId: orgId, status: "pending" }),
+      // For the new-Mandal setup checklist: the creator's own member record and login don't count.
+      c.members.countDocuments({ organizationId: orgId, status: { $ne: "left" }, userId: { $ne: ctx.org.createdBy } }),
+      c.organizationMemberships.countDocuments({ organizationId: orgId, status: "active", userId: { $ne: ctx.org.createdBy } }),
     ]),
   ]);
   const activeMembers = activeAgg.n;
@@ -363,6 +366,8 @@ export async function adminDashboard(ctx: OrgContext) {
     recentTransactions: recent,
     recentWithdrawals,
     monthlyChart: chart,
+    /** New-Mandal setup checklist: what's been done beyond the creator setting it up. */
+    setup: { otherMembers, otherLogins, hasMoney: recent.length > 0 || !!ctx.org.settings.openingImport },
   };
 }
 
@@ -405,6 +410,7 @@ export async function managerDashboard(ctx: OrgContext) {
     recentTransactions: full.recentTransactions,
     recentWithdrawals: full.recentWithdrawals,
     monthlyChart: showMoney ? full.monthlyChart : undefined,
+    setup: full.setup,
   };
 }
 

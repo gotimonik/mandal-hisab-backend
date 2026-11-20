@@ -1,6 +1,7 @@
 import type { OrgContext } from "@/lib/auth";
 import { cols } from "@/lib/collections";
 import { todayIn } from "@/lib/dates";
+import type { ObjectId } from "mongodb";
 import { availableCashPaise, listAccounts } from "./account.service";
 import { listMembers } from "./member.service";
 
@@ -16,6 +17,7 @@ import { listMembers } from "./member.service";
  */
 export async function membersSheet(ctx: OrgContext) {
   const [list, cashPaise] = await Promise.all([listMembers(ctx, { status: "active", page: 1, pageSize: 5000 }), availableCashPaise(ctx.orgId)]);
+  const interest = await interestByMonth(ctx, list.items.map((m) => m._id));
   const rows = list.items.map((m) => {
     const haptaDuePaise = m.outstandingPaise ?? 0;
     const interestDuePaise = m.upadInterestDuePaise ?? 0;
@@ -28,11 +30,25 @@ export async function membersSheet(ctx: OrgContext) {
       haptaDuePaise,
       upadPaise: m.upadPaise ?? 0,
       interestDuePaise,
+      /** unpaid upad interest of earlier months / of this month, and interest paid this month */
+      interestPrevDuePaise: interest.prev.get(m._id.toHexString()) ?? 0,
+      interestMonthDuePaise: interest.month.get(m._id.toHexString()) ?? 0,
+      interestPaidMonthPaise: interest.paid.get(m._id.toHexString()) ?? 0,
       pendingPaise: haptaDuePaise + interestDuePaise,
     };
   });
-  const sum = (k: "savingsPaise" | "haptaDuePaise" | "upadPaise" | "interestDuePaise" | "pendingPaise" | "shares") => rows.reduce((s, r) => s + r[k], 0);
-  const totals = { shares: sum("shares"), savingsPaise: sum("savingsPaise"), haptaDuePaise: sum("haptaDuePaise"), upadPaise: sum("upadPaise"), interestDuePaise: sum("interestDuePaise"), pendingPaise: sum("pendingPaise") };
+  const sum = (k: "savingsPaise" | "haptaDuePaise" | "upadPaise" | "interestDuePaise" | "interestPrevDuePaise" | "interestMonthDuePaise" | "interestPaidMonthPaise" | "pendingPaise" | "shares") => rows.reduce((s, r) => s + r[k], 0);
+  const totals = {
+    shares: sum("shares"),
+    savingsPaise: sum("savingsPaise"),
+    haptaDuePaise: sum("haptaDuePaise"),
+    upadPaise: sum("upadPaise"),
+    interestDuePaise: sum("interestDuePaise"),
+    interestPrevDuePaise: sum("interestPrevDuePaise"),
+    interestMonthDuePaise: sum("interestMonthDuePaise"),
+    interestPaidMonthPaise: sum("interestPaidMonthPaise"),
+    pendingPaise: sum("pendingPaise"),
+  };
   const totalPaise = cashPaise + totals.upadPaise + totals.haptaDuePaise + totals.interestDuePaise;
   const members = rows.length;
   const byShares = totals.shares !== members;
@@ -47,6 +63,7 @@ export async function membersSheet(ctx: OrgContext) {
   const { holders, movements } = await cashHolders(ctx);
   return {
     asOf: todayIn(ctx.org.settings.timezone),
+    month: interest.monthKey,
     holders,
     movements,
     mandal: ctx.org.name,
@@ -94,4 +111,33 @@ async function cashHolders(ctx: OrgContext) {
     })
     .reverse(); // oldest first, like a register
   return { holders, movements };
+}
+
+/**
+ * Upad interest per member for this month's sheet: still unpaid from earlier months, still unpaid
+ * for this month, and paid this month (by date paid, whichever month it was for).
+ */
+async function interestByMonth(ctx: OrgContext, memberIds: ObjectId[]) {
+  const c = await cols();
+  const today = todayIn(ctx.org.settings.timezone);
+  const monthKey = today.toISOString().slice(0, 7);
+  const monthStart = new Date(`${monthKey}-01T00:00:00.000Z`);
+  const [dues, paid] = await Promise.all([
+    c.fundLoanDues
+      .aggregate<{ _id: { memberId: ObjectId; earlier: boolean }; due: number }>([
+        { $match: { organizationId: ctx.orgId, memberId: { $in: memberIds }, period: { $lte: monthKey }, $expr: { $lt: ["$paidPaise", "$interestPaise"] } } },
+        { $group: { _id: { memberId: "$memberId", earlier: { $lt: ["$period", monthKey] } }, due: { $sum: { $subtract: ["$interestPaise", "$paidPaise"] } } } },
+      ])
+      .toArray(),
+    c.fundLoanPayments
+      .aggregate<{ _id: ObjectId; paid: number }>([
+        { $match: { organizationId: ctx.orgId, memberId: { $in: memberIds }, status: "valid", date: { $gte: monthStart, $lte: today }, interestPaise: { $gt: 0 } } },
+        { $group: { _id: "$memberId", paid: { $sum: "$interestPaise" } } },
+      ])
+      .toArray(),
+  ]);
+  const prev = new Map<string, number>();
+  const month = new Map<string, number>();
+  for (const d of dues) (d._id.earlier ? prev : month).set(d._id.memberId.toHexString(), d.due);
+  return { monthKey, prev, month, paid: new Map(paid.map((p) => [p._id.toHexString(), p.paid])) };
 }

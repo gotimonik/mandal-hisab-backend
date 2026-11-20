@@ -72,11 +72,20 @@ describe("unpaid interest already in members' savings", () => {
     const st = await ok(api("GET", `/orgs/${o.orgId}`, { token: o.admin.token }));
     expect(st.settings.openingImport).toMatchObject({ interestInSavings: true, mandalOwnPaise: 0 });
 
+    // the hisab sheet splits the interest: ₹2,000 from earlier months + ₹600 for this month, none paid yet
+    const before = await ok(api("GET", `/orgs/${o.orgId}/members-sheet`, { token: o.admin.token }));
+    expect(before.rows.find((r: { memberId: string }) => r.memberId === o.ramesh)).toMatchObject({ interestPrevDuePaise: 200_000, interestMonthDuePaise: 60_000, interestPaidMonthPaise: 0, interestDuePaise: 260_000 });
+
     // ₹2,600 = the brought-forward ₹2,000 (cash only) + this month's ₹600 (shared)
     await ok(api("POST", `/orgs/${o.orgId}/members/${o.ramesh}/upad-interest`, { token: o.admin.token, body: { amount: "2600", date: todayIST(), idempotencyKey: uniq("ui") } }));
     const t = await dash(o);
     expect(t.mandalCashPaise).toBe(4_060_000);
     expect(t.totalMemberBalancesPaise).toBe(10_060_000);
+
+    const after = await ok(api("GET", `/orgs/${o.orgId}/members-sheet`, { token: o.admin.token }));
+    expect(after.rows.find((r: { memberId: string }) => r.memberId === o.ramesh)).toMatchObject({ interestPrevDuePaise: 0, interestMonthDuePaise: 0, interestPaidMonthPaise: 260_000 });
+    expect(after.totals).toMatchObject({ interestPaidMonthPaise: 260_000, interestPrevDuePaise: 0, interestMonthDuePaise: 0 });
+    expect(after.month).toBe(thisMonth());
 
     // once some of it is collected it can't be changed any more
     expect((await api("POST", `/orgs/${o.orgId}/opening-import/interest-in-savings`, { token: o.admin.token, body: { inSavings: false } })).status).toBe(400);
