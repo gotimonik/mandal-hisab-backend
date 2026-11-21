@@ -276,9 +276,9 @@ const COPY = {
     hi: (f) => ({ title: "उपाड़ की माँग मंज़ूर नहीं हुई", body: `आपकी ${f.m("amountPaise")} की माँग मंज़ूर नहीं हुई${reason(f) ? `: ${reason(f)}` : ""}।` }),
   },
   "fundLoan.given": {
-    en: (f) => ({ title: "Upad given to you", body: `${f.m("amountPaise")} upad (${f.s("number")}). Interest: ${f.s("rate")}% a month, from ${f.month("fromMonth")}.` }),
-    gu: (f) => ({ title: "તમને ઉપાડ મળ્યો", body: `${f.m("amountPaise")} ઉપાડ (${f.s("number")}). વ્યાજ: માસિક ${f.s("rate")}%, ${f.month("fromMonth")} થી.` }),
-    hi: (f) => ({ title: "आपको उपाड़ मिला", body: `${f.m("amountPaise")} उपाड़ (${f.s("number")})। ब्याज: मासिक ${f.s("rate")}%, ${f.month("fromMonth")} से।` }),
+    en: (f) => ({ title: "Upad given to you", body: `${f.m("amountPaise")} upad (${f.s("number")}). Interest: ${f.s("rate")}% a month, from ${f.month("fromMonth")}.${f.has("installments") ? ` Return it in ${f.s("installments")} monthly installments of ${f.m("installmentPaise")}, with the interest.` : ""}` }),
+    gu: (f) => ({ title: "તમને ઉપાડ મળ્યો", body: `${f.m("amountPaise")} ઉપાડ (${f.s("number")}). વ્યાજ: માસિક ${f.s("rate")}%, ${f.month("fromMonth")} થી.${f.has("installments") ? ` ઉપાડ ${f.s("installments")} માસિક હપ્તામાં, દર મહિને ${f.m("installmentPaise")} વ્યાજ સાથે ભરવાનો રહેશે.` : ""}` }),
+    hi: (f) => ({ title: "आपको उपाड़ मिला", body: `${f.m("amountPaise")} उपाड़ (${f.s("number")})। ब्याज: मासिक ${f.s("rate")}%, ${f.month("fromMonth")} से।${f.has("installments") ? ` उपाड़ ${f.s("installments")} मासिक किस्तों में, हर महीने ${f.m("installmentPaise")} ब्याज के साथ लौटाना है।` : ""}` }),
   },
   "org.moneyReset": {
     en: (f) => ({ title: "Mandal hisab reset", body: `${f.s("actor")} cleared all hapta, upad and interest entries to start the hisab afresh. Members are kept; balances will be brought in again.` }),

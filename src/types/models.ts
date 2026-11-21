@@ -130,7 +130,13 @@ export interface OrganizationSettings {
   interest: InterestSettings;
   withdrawals: { allowExceptions: boolean };
   /** Loans from the Mandal fund: interest-only, charged monthly on the outstanding amount. */
-  fundLoans: { defaultMonthlyRate: string; dueDay: number; allowMemberRequests: boolean };
+  fundLoans: {
+    defaultMonthlyRate: string;
+    dueDay: number;
+    allowMemberRequests: boolean;
+    /** When on, every new upad must be returned in `count` equal monthly installments (with the interest). */
+    installments: { enabled: boolean; count: number };
+  };
   membership: { discoverable: boolean; allowJoinRequests: boolean; autoCreateMember: boolean };
   /** Last month the Mandal runs (YYYY-MM). No hapta is created after it. Absent/null = no end. */
   endMonth?: string | null;
@@ -889,6 +895,8 @@ export interface FundLoanDoc {
   monthlyRate: string; // % per month, e.g. "10"
   date: Date; // given on
   firstInterestMonth: string; // YYYY-MM (month after `date`)
+  /** Compulsory monthly installments, fixed when the upad is given (absent = return any time). */
+  installmentPlan?: UpadInstallmentPlan | null;
   accountId: Id;
   note?: string;
   status: "active" | "closed" | "cancelled";
@@ -899,6 +907,13 @@ export interface FundLoanDoc {
   createdBy: Id;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/** An upad returned in equal monthly installments: `amountPaise` a month from `firstMonth` (the last one is what's left). */
+export interface UpadInstallmentPlan {
+  count: number;
+  amountPaise: number;
+  firstMonth: string; // YYYY-MM
 }
 
 /** One month's interest charge on a fund loan — unique (org, loan, period). */

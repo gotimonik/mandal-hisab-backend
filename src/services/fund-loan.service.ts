@@ -18,6 +18,7 @@ import { rateInterest } from "./member-interest.service";
 import { lastOfMonth, monthOf } from "./monthly.service";
 import { cancelReceiptFor, issueReceipt } from "./receipt.service";
 import { notifyMember, notifyOrgMembers } from "./notification.service";
+import { installmentStatus, makeInstallmentPlan } from "./upad-installments";
 import { copy } from "./notification-copy";
 
 /**
@@ -164,12 +165,14 @@ export async function giveFundLoan(ctx: OrgContext, input: z.infer<typeof GiveLo
       if (cashBal < input.amount) throw badRequest(`${account.name} has only ${formatMoney(cashBal, ctx.org.settings.currency)} — the Mandal can't give more cash than it holds`);
       const id = new ObjectId();
       const number = await fyNumber(ctx.org, "UPAD", input.date, session);
+      const firstInterestMonth = nextMonth(monthOf(input.date));
+      const plan = makeInstallmentPlan(input.amount, ctx.org.settings.fundLoans.installments, firstInterestMonth);
       const txn = await postTransaction(
         {
           org: ctx.org,
           type: "fund_loan_given",
           date: input.date,
-          description: `Upad ${number} to ${member.name} @ ${rate}% per month${input.note ? ` (${input.note})` : ""}`,
+          description: `Upad ${number} to ${member.name} @ ${rate}% per month${plan ? `, returned in ${plan.count} monthly installments of ${formatMoney(plan.amountPaise, ctx.org.settings.currency)}` : ""}${input.note ? ` (${input.note})` : ""}`,
           lines: [
             { accountKey: FUND_LOANS, debitPaise: input.amount, memberId: member._id },
             { accountKey: faKey(account._id), creditPaise: input.amount },
@@ -191,7 +194,8 @@ export async function giveFundLoan(ctx: OrgContext, input: z.infer<typeof GiveLo
         outstandingPaise: input.amount,
         monthlyRate: rate,
         date: input.date,
-        firstInterestMonth: nextMonth(monthOf(input.date)),
+        firstInterestMonth,
+        installmentPlan: plan,
         accountId: account._id,
         note: input.note,
         status: "active",
@@ -203,14 +207,24 @@ export async function giveFundLoan(ctx: OrgContext, input: z.infer<typeof GiveLo
         updatedAt: now,
       };
       await c.fundLoans.insertOne(doc, { session });
-      await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "fundLoan.give", entityType: "fundLoan", entityId: id, after: { number, memberId: member._id, amountPaise: input.amount, monthlyRate: rate } }, session);
+      await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "fundLoan.give", entityType: "fundLoan", entityId: id, after: { number, memberId: member._id, amountPaise: input.amount, monthlyRate: rate, installmentPlan: plan } }, session);
       return doc;
     });
     await refreshLoanDues(ctx.org, loan);
     await notifyMember(ctx.orgId, loan.memberId, {
       actorId: ctx.user._id,
       type: "fundLoan.given",
-      copy: copy("fundLoan.given", { amountPaise: loan.principalPaise, number: loan.number, rate: loan.monthlyRate, fromMonth: loan.firstInterestMonth }, ctx.org.settings.currency),
+      copy: copy(
+        "fundLoan.given",
+        {
+          amountPaise: loan.principalPaise,
+          number: loan.number,
+          rate: loan.monthlyRate,
+          fromMonth: loan.firstInterestMonth,
+          ...(loan.installmentPlan ? { installments: String(loan.installmentPlan.count), installmentPaise: loan.installmentPlan.amountPaise } : {}),
+        },
+        ctx.org.settings.currency,
+      ),
       link: `/org/${ctx.orgId}/my`,
       dedupeKey: `fl:${loan._id}`,
     });
@@ -543,6 +557,16 @@ export async function cancelFundLoan(ctx: OrgContext, loanId: ObjectId, reasonTe
 
 /* ------------------------------------------------------------------ queries */
 
+/** Where the upad stands against its installments (no rows), as of today. */
+function installmentNow(org: Pick<OrganizationDoc, "settings">, l: FundLoanDoc) {
+  if (l.status !== "active" || !l.installmentPlan) return null;
+  const today = todayIn(org.settings.timezone);
+  const st = installmentStatus(l, { month: monthOf(today), today, dueDay: org.settings.fundLoans?.dueDay ?? 10 });
+  if (!st) return null;
+  const { rows: _rows, ...rest } = st;
+  return rest;
+}
+
 type LoanSummary = FundLoanDoc & {
   member: { _id: ObjectId; name: string; membershipNumber: string } | null;
   interestDuePaise: number;
@@ -551,10 +575,13 @@ type LoanSummary = FundLoanDoc & {
   nextInterestPaise: number;
   /** the borrower's upad advance (shared by all their upads) */
   memberAdvancePaise: number;
+  /** compulsory installments (Mandals with fixed installments), null otherwise */
+  installment: ReturnType<typeof installmentNow>;
 };
 
-async function summarize(orgId: ObjectId, loans: FundLoanDoc[]): Promise<LoanSummary[]> {
+async function summarize(org: Pick<OrganizationDoc, "_id" | "settings">, loans: FundLoanDoc[]): Promise<LoanSummary[]> {
   const c = await cols();
+  const orgId = org._id;
   const ids = loans.map((l) => l._id);
   const [dues, members] = await Promise.all([
     c.fundLoanDues.find({ organizationId: orgId, loanId: { $in: ids } }).sort({ period: 1 }).toArray(),
@@ -572,6 +599,7 @@ async function summarize(orgId: ObjectId, loans: FundLoanDoc[]): Promise<LoanSum
       interestPaidPaise: ld.reduce((s, d) => s + d.paidPaise, 0),
       nextInterestPaise: l.status === "active" ? rateInterest(l.outstandingPaise, l.monthlyRate) : 0,
       memberAdvancePaise: m?.upadAdvancePaise ?? 0,
+      installment: installmentNow(org, l),
     };
   });
 }
@@ -586,7 +614,7 @@ export async function listFundLoans(ctx: OrgContext, q: z.infer<typeof FundLoanL
   else if (q.memberId && ObjectId.isValid(q.memberId)) filter.memberId = new ObjectId(q.memberId);
   // the dues refresh only writes dues, so the loans can be read at the same time
   const [, loans] = await Promise.all([refreshFundLoanDues(ctx.org), c.fundLoans.find(filter).sort({ status: 1, date: -1 }).limit(500).toArray()]);
-  const items = await summarize(ctx.orgId, loans);
+  const items = await summarize(ctx.org, loans);
   const active = items.filter((l) => l.status === "active");
   return {
     items,
@@ -595,8 +623,11 @@ export async function listFundLoans(ctx: OrgContext, q: z.infer<typeof FundLoanL
       interestDuePaise: items.reduce((s, l) => s + l.interestDuePaise, 0),
       interestPaidPaise: items.reduce((s, l) => s + l.interestPaidPaise, 0),
       activeLoans: active.length,
+      /** upad installments due now (Mandals with fixed installments) */
+      installmentDuePaise: active.reduce((s, l) => s + (l.installment?.duePaise ?? 0), 0),
     },
     defaultMonthlyRate: ctx.org.settings.fundLoans.defaultMonthlyRate,
+    installments: ctx.org.settings.fundLoans.installments,
   };
 }
 
@@ -606,15 +637,17 @@ export async function getFundLoan(ctx: OrgContext, loanId: ObjectId, restrictMem
   if (!loan) throw notFound("Upad");
   if (restrictMemberId !== undefined && (!restrictMemberId || !loan.memberId.equals(restrictMemberId))) throw notFound("Upad");
   await refreshLoanDues(ctx.org, loan);
-  const [summary] = await summarize(ctx.orgId, [loan]);
+  const [summary] = await summarize(ctx.org, [loan]);
   const [dues, payments] = await Promise.all([
     c.fundLoanDues.find({ organizationId: ctx.orgId, loanId }).sort({ period: 1 }).toArray(),
     c.fundLoanPayments.find({ organizationId: ctx.orgId, loanId }, { projection: { shares: 0 } }).sort({ date: -1, createdAt: -1 }).toArray(),
   ]);
   const users = await c.users.find({ _id: { $in: payments.map((p) => p.recordedBy) } }, { projection: { name: 1 } }).toArray();
   const today = todayIn(ctx.org.settings.timezone);
+  const installments = loan.installmentPlan ? installmentStatus(loan, { month: monthOf(today), today, dueDay: ctx.org.settings.fundLoans.dueDay }) : null;
   return {
     loan: summary,
+    installments,
     dues: dues.map((d) => ({ ...d, unpaidPaise: d.interestPaise - d.paidPaise, status: d.paidPaise >= d.interestPaise ? "paid" : d.dueDate < today ? "overdue" : d.paidPaise > 0 ? "partially_paid" : "pending" })),
     payments: payments.map((p) => ({ ...p, recordedByName: users.find((u) => u._id.equals(p.recordedBy))?.name ?? null })),
   };
@@ -633,8 +666,16 @@ export async function fundLoanMonth(ctx: OrgContext, monthParam?: string) {
   const relevant = dues.filter((d) => d.period === month || d.paidPaise < d.interestPaise);
   const loanIds = [...new Set(relevant.map((d) => d.loanId.toHexString()))].map((x) => new ObjectId(x));
   const loans = await c.fundLoans.find({ _id: { $in: loanIds } }).toArray();
-  const items = await summarize(ctx.orgId, loans);
+  const items = await summarize(ctx.org, loans);
   const today = todayIn(ctx.org.settings.timezone);
+  // installments are judged by what had been returned by the end of the month shown
+  const planned = loans.filter((l) => l.installmentPlan);
+  const monthEnd = lastOfMonth(month);
+  const returnedBy = new Map<string, number>();
+  if (planned.length) {
+    const ps = await c.fundLoanPayments.find({ organizationId: ctx.orgId, loanId: { $in: planned.map((l) => l._id) }, status: "valid", principalPaise: { $gt: 0 }, date: { $lte: monthEnd } }, { projection: { loanId: 1, principalPaise: 1 } }).toArray();
+    for (const p of ps) returnedBy.set(p.loanId.toHexString(), (returnedBy.get(p.loanId.toHexString()) ?? 0) + p.principalPaise);
+  }
   const rows = items
     .map((l) => {
       const ld = relevant.filter((d) => d.loanId.equals(l._id));
@@ -653,6 +694,11 @@ export async function fundLoanMonth(ctx: OrgContext, monthParam?: string) {
         carriedForwardPaise: unpaidEarlier,
         carriedForwardMonths: earlier.map((d) => d.period),
         totalDuePaise: unpaidEarlier + unpaidThis,
+        installment: (() => {
+          if (!l.installmentPlan || l.status === "cancelled") return null;
+          const st = installmentStatus(l, { month, today, dueDay: ctx.org.settings.fundLoans.dueDay, returnedPaise: returnedBy.get(l._id.toHexString()) ?? 0 });
+          return st ? { count: st.count, amountPaise: st.amountPaise, thisMonthPaise: st.thisMonthPaise, overduePaise: st.overduePaise, duePaise: st.duePaise, sequence: st.rows.find((r) => r.period === month)?.sequence ?? null } : null;
+        })(),
         status: unpaidEarlier + unpaidThis === 0 ? "paid" : thisMonth && thisMonth.paidPaise > 0 && unpaidEarlier === 0 ? "partially_paid" : (thisMonth ? thisMonth.dueDate < today : true) ? "overdue" : "pending",
       };
     })
@@ -665,8 +711,23 @@ export async function fundLoanMonth(ctx: OrgContext, monthParam?: string) {
       interestThisMonthPaise: rows.reduce((s, r) => s + (r.thisMonth?.interestPaise ?? 0), 0),
       collectedThisMonthPaise: rows.reduce((s, r) => s + (r.thisMonth?.paidPaise ?? 0), 0),
       totalDuePaise: rows.reduce((s, r) => s + r.totalDuePaise, 0),
+      installmentDuePaise: rows.reduce((s, r) => s + (r.installment?.duePaise ?? 0), 0),
     },
   };
+}
+
+/** Upad installments due now per member (Mandals with fixed installments): memberId → paise, only members owing some. */
+export async function installmentDueByMember(org: Pick<OrganizationDoc, "_id" | "settings">, memberIds?: ObjectId[]) {
+  const c = await cols();
+  const loans = await c.fundLoans
+    .find({ organizationId: org._id, status: "active", installmentPlan: { $ne: null, $exists: true }, ...(memberIds ? { memberId: { $in: memberIds } } : {}) }, { projection: { memberId: 1, principalPaise: 1, outstandingPaise: 1, installmentPlan: 1, status: 1 } })
+    .toArray();
+  const out = new Map<string, number>();
+  for (const l of loans) {
+    const due = installmentNow(org, l as FundLoanDoc)?.duePaise ?? 0;
+    if (due > 0) out.set(l.memberId.toHexString(), (out.get(l.memberId.toHexString()) ?? 0) + due);
+  }
+  return out;
 }
 
 /** For dashboards. */
@@ -676,7 +737,7 @@ export async function fundLoanTotals(org: Pick<OrganizationDoc, "_id" | "setting
   const match: Record<string, unknown> = { organizationId: org._id };
   if (memberId) match.memberId = memberId;
   const [loans, dues, adv] = await Promise.all([
-    c.fundLoans.find({ ...match, status: "active" }, { projection: { outstandingPaise: 1, monthlyRate: 1, number: 1 } }).toArray(),
+    c.fundLoans.find({ ...match, status: "active" }, { projection: { outstandingPaise: 1, monthlyRate: 1, number: 1, principalPaise: 1, installmentPlan: 1, status: 1 } }).toArray(),
     c.fundLoanDues.aggregate<{ t: number }>([{ $match: match }, { $group: { _id: null, t: { $sum: { $subtract: ["$interestPaise", "$paidPaise"] } } } }]).toArray(),
     c.members.aggregate<{ t: number }>([{ $match: { organizationId: org._id, ...(memberId ? { _id: memberId } : {}), upadAdvancePaise: { $gt: 0 } } }, { $group: { _id: null, t: { $sum: "$upadAdvancePaise" } } }]).toArray(),
   ]);
@@ -686,5 +747,7 @@ export async function fundLoanTotals(org: Pick<OrganizationDoc, "_id" | "setting
     interestDuePaise: dues[0]?.t ?? 0,
     /** upad interest members have paid ahead (owed to them until used) */
     advancePaise: adv[0]?.t ?? 0,
+    /** upad installments due now (Mandals with fixed installments) */
+    installmentDuePaise: loans.reduce((s, l) => s + (installmentNow(org, l as FundLoanDoc)?.duePaise ?? 0), 0),
   };
 }

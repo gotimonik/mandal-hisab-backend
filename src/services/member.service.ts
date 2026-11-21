@@ -177,13 +177,13 @@ function pick(o: object, keys: string[]) {
   return Object.fromEntries(keys.map((k) => [k, (o as Record<string, unknown>)[k]]));
 }
 
-/** Members who owe something now: hapta due so far not fully paid, or upad interest not paid. */
+/** Members who owe something now: hapta due so far not fully paid, upad interest not paid, or an upad installment due. */
 async function membersWithDues(ctx: OrgContext): Promise<ObjectId[]> {
   const c = await cols();
   const today = todayIn(ctx.org.settings.timezone);
-  const { refreshFundLoanDues } = await import("./fund-loan.service");
+  const { refreshFundLoanDues, installmentDueByMember } = await import("./fund-loan.service");
   await refreshFundLoanDues(ctx.org);
-  const [hapta, interest] = await Promise.all([
+  const [hapta, interest, installments] = await Promise.all([
     c.installments.distinct("memberId", {
       organizationId: ctx.orgId,
       state: "active",
@@ -191,8 +191,9 @@ async function membersWithDues(ctx: OrgContext): Promise<ObjectId[]> {
       $expr: { $lt: [{ $add: ["$paidPaise", "$penaltyPaidPaise"] }, { $add: ["$amountPaise", "$penaltyPaise"] }] },
     }),
     c.fundLoanDues.distinct("memberId", { organizationId: ctx.orgId, $expr: { $lt: ["$paidPaise", "$interestPaise"] } }),
+    installmentDueByMember(ctx.org),
   ]);
-  return [...hapta, ...interest] as ObjectId[];
+  return [...hapta, ...interest, ...[...installments.keys()].map((k) => new ObjectId(k))] as ObjectId[];
 }
 
 export async function listMembers(ctx: OrgContext, q: Omit<z.infer<typeof MemberListQuery>, "due"> & { due?: boolean }) {
@@ -228,9 +229,9 @@ export async function listMembers(ctx: OrgContext, q: Omit<z.infer<typeof Member
     .toArray();
   const dueMap = new Map(dues.map((d) => [d._id.toHexString(), d]));
   // Upad still owed and its unpaid interest, for the same members (dues brought up to date first)
-  const { refreshFundLoanDues } = await import("./fund-loan.service");
+  const { refreshFundLoanDues, installmentDueByMember } = await import("./fund-loan.service");
   await refreshFundLoanDues(ctx.org);
-  const [loans, interest] = await Promise.all([
+  const [loans, interest, installmentMap] = await Promise.all([
     c.fundLoans
       .aggregate<{ _id: ObjectId; owed: number }>([{ $match: { organizationId: ctx.orgId, memberId: { $in: ids }, status: "active" } }, { $group: { _id: "$memberId", owed: { $sum: "$outstandingPaise" } } }])
       .toArray(),
@@ -240,6 +241,7 @@ export async function listMembers(ctx: OrgContext, q: Omit<z.infer<typeof Member
         { $group: { _id: "$memberId", due: { $sum: { $subtract: ["$interestPaise", "$paidPaise"] } } } },
       ])
       .toArray(),
+    installmentDueByMember(ctx.org, ids),
   ]);
   const loanMap = new Map(loans.map((l) => [l._id.toHexString(), l.owed]));
   const interestMap = new Map(interest.map((d) => [d._id.toHexString(), d.due]));
@@ -255,6 +257,8 @@ export async function listMembers(ctx: OrgContext, q: Omit<z.infer<typeof Member
         upadPaise: loanMap.get(k) ?? 0,
         /** upad interest due and not yet paid */
         upadInterestDuePaise: interestMap.get(k) ?? 0,
+        /** upad installments due and not yet returned (Mandals with fixed installments) */
+        upadInstallmentDuePaise: installmentMap.get(k) ?? 0,
       };
     }),
     total,

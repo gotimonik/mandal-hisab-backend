@@ -129,6 +129,8 @@ export const UpdateOrgSchema = z.object({
         defaultMonthlyRate: z.string().regex(/^\d{1,3}(\.\d{1,4})?$/, "Enter a rate like 2 or 1.5"),
         dueDay: z.number().int().min(1).max(28),
         allowMemberRequests: z.boolean().default(true),
+        /** Absent (older app versions) = keep what is saved. */
+        installments: z.object({ enabled: z.boolean(), count: z.number().int().min(2).max(60) }).optional(),
       }),
       membership: z.object({ discoverable: z.boolean(), allowJoinRequests: z.boolean(), autoCreateMember: z.boolean() }),
     })
@@ -519,6 +521,7 @@ export async function updateOrganization(ctx: OrgContext, input: z.infer<typeof 
       }
     }
     const { paymentMethods: _ignored, ...saved } = settings;
+    if (saved.fundLoans && !saved.fundLoans.installments) saved.fundLoans = { ...saved.fundLoans, installments: ctx.org.settings.fundLoans.installments };
     for (const [k, v] of Object.entries(saved)) if (v !== undefined) $set[`settings.${k}`] = v;
   }
   const after = await c.organizations.findOneAndUpdate({ _id: ctx.orgId }, { $set }, { returnDocument: "after" });

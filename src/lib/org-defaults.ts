@@ -64,7 +64,7 @@ export function defaultSettings(): OrganizationSettings {
     haptaTreatment: "member_savings",
     interest: { defaultMode: "manual", monthlyRate: "1", basis: "previous_month_closing" },
     withdrawals: { allowExceptions: false },
-    fundLoans: { defaultMonthlyRate: "2", dueDay: 10, allowMemberRequests: true },
+    fundLoans: { defaultMonthlyRate: "2", dueDay: 10, allowMemberRequests: true, installments: { enabled: false, count: 10 } },
     membership: { discoverable: true, allowJoinRequests: true, autoCreateMember: true },
   };
 }
@@ -84,7 +84,7 @@ export function withSettingsDefaults<T extends Pick<OrganizationDoc, "settings">
     haptaTreatment: s.haptaTreatment ?? (s.monthlyHapta === undefined ? "income" : d.haptaTreatment),
     interest: { ...d.interest, ...(s.interest ?? {}) },
     withdrawals: { ...d.withdrawals, ...(s.withdrawals ?? {}) },
-    fundLoans: { ...d.fundLoans, ...(s.fundLoans ?? {}) },
+    fundLoans: { ...d.fundLoans, ...(s.fundLoans ?? {}), installments: { ...d.fundLoans.installments, ...(s.fundLoans?.installments ?? {}) } },
     membership: { ...d.membership, ...(s.membership ?? {}) },
     managerPermissions: { ...d.managerPermissions, ...(s.managerPermissions ?? {}) },
     upi,
