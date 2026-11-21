@@ -43,6 +43,11 @@ type MemberInput = Partial<z.infer<typeof MemberInputSchema>> & { name: string }
 export const MemberListQuery = z.object({
   q: z.string().trim().max(100).optional(),
   status: z.enum(["active", "inactive", "left"]).optional(),
+  /** only members who owe something now: unpaid hapta due so far or unpaid upad interest */
+  due: z
+    .enum(["1", "true", "0", "false"])
+    .optional()
+    .transform((v) => v === "1" || v === "true"),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(25),
 });
@@ -172,11 +177,30 @@ function pick(o: object, keys: string[]) {
   return Object.fromEntries(keys.map((k) => [k, (o as Record<string, unknown>)[k]]));
 }
 
-export async function listMembers(ctx: OrgContext, q: z.infer<typeof MemberListQuery>) {
+/** Members who owe something now: hapta due so far not fully paid, or upad interest not paid. */
+async function membersWithDues(ctx: OrgContext): Promise<ObjectId[]> {
+  const c = await cols();
+  const today = todayIn(ctx.org.settings.timezone);
+  const { refreshFundLoanDues } = await import("./fund-loan.service");
+  await refreshFundLoanDues(ctx.org);
+  const [hapta, interest] = await Promise.all([
+    c.installments.distinct("memberId", {
+      organizationId: ctx.orgId,
+      state: "active",
+      dueDate: { $lte: today },
+      $expr: { $lt: [{ $add: ["$paidPaise", "$penaltyPaidPaise"] }, { $add: ["$amountPaise", "$penaltyPaise"] }] },
+    }),
+    c.fundLoanDues.distinct("memberId", { organizationId: ctx.orgId, $expr: { $lt: ["$paidPaise", "$interestPaise"] } }),
+  ]);
+  return [...hapta, ...interest] as ObjectId[];
+}
+
+export async function listMembers(ctx: OrgContext, q: Omit<z.infer<typeof MemberListQuery>, "due"> & { due?: boolean }) {
   const c = await cols();
   const filter: Record<string, unknown> = { organizationId: ctx.orgId };
   if (q.status) filter.status = q.status;
   if (q.q) filter.searchText = { $regex: q.q.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&") };
+  if (q.due) filter._id = { $in: await membersWithDues(ctx) };
   const [items, total] = await Promise.all([
     c.members
       .find(filter, { projection: { searchText: 0 } })

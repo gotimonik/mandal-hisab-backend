@@ -18,6 +18,7 @@ import * as fl from "@/services/fund-loan.service";
 import * as ur from "@/services/upad-request.service";
 import * as ui from "@/services/upad-interest.service";
 import * as mp from "@/services/member-payments.service";
+import * as collect from "@/services/member-collect.service";
 import * as orgService from "@/services/organization.service";
 import * as meetings from "@/services/meeting.service";
 import { optText } from "@/validators/common";
@@ -134,6 +135,11 @@ export function registerSavingsRoutes(r: Router) {
     const settledClaimId = res.duplicate ? null : await mp.settleMatchingClaim(ctx, res.payment);
     return { ...res, settledClaimId };
   });
+  /* collect a member's hapta and upad interest from one screen */
+  r.get("/orgs/:orgId/members/:memberId/dues", async (req) => collect.memberDues(await req.org("payments.record"), parseObjectId(req.params.memberId, "Member")));
+  r.post("/orgs/:orgId/members/:memberId/collect", async (req) =>
+    collect.collectFromMember(await req.org("payments.record", W), parseObjectId(req.params.memberId, "Member"), await req.body(collect.MemberCollectSchema)),
+  );
   /* interest for all of a member's upads at once; the extra is kept as their upad advance */
   r.get("/orgs/:orgId/members/:memberId/upad-interest", async (req) => ui.memberUpadInterest(await req.org("members.view"), parseObjectId(req.params.memberId, "Member")));
   r.post("/orgs/:orgId/members/:memberId/upad-interest", async (req) => {
