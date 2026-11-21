@@ -134,6 +134,8 @@ export const GiveLoanSchema = z.object({
   date: dateOnly,
   /** % per month; defaults to the Mandal setting */
   monthlyRate: rateString.optional(),
+  /** first installment month (YYYY-MM) when the upad gets installments; default the month after it is given */
+  installmentStartMonth: z.string().regex(MONTH, "Use YYYY-MM").optional(),
   note: optText(300),
   accountId: z.string().optional(),
   idempotencyKey,
@@ -166,7 +168,7 @@ export async function giveFundLoan(ctx: OrgContext, input: z.infer<typeof GiveLo
       const id = new ObjectId();
       const number = await fyNumber(ctx.org, "UPAD", input.date, session);
       const firstInterestMonth = nextMonth(monthOf(input.date));
-      const plan = makeInstallmentPlan(input.amount, ctx.org.settings.fundLoans.installments, firstInterestMonth);
+      const plan = makeInstallmentPlan(input.amount, ctx.org.settings.fundLoans.installments, checkStartMonth(input.installmentStartMonth ?? firstInterestMonth, firstInterestMonth));
       const txn = await postTransaction(
         {
           org: ctx.org,
@@ -252,7 +254,20 @@ export async function giveFundLoan(ctx: OrgContext, input: z.infer<typeof GiveLo
 
 /* ------------------------------------------------------------------ installments on running upads */
 
-export const StartInstallmentsSchema = z.object({ count: z.number().int().min(2).max(60) });
+export const StartInstallmentsSchema = z.object({
+  count: z.number().int().min(2).max(60),
+  /** first installment month (YYYY-MM); default next month */
+  startMonth: z.string().regex(MONTH, "Use YYYY-MM").optional(),
+});
+
+/** The first installment month must be from `earliest` and within two years of it. */
+function checkStartMonth(month: string, earliest: string) {
+  if (month < earliest) throw badRequest(`Installments can start from ${earliest} at the earliest`);
+  let limit = earliest;
+  for (let k = 0; k < 24; k++) limit = nextMonth(limit);
+  if (month > limit) throw badRequest("Installments must start within two years");
+  return month;
+}
 
 /**
  * Put a running upad (given before installments were turned on) on fixed installments: what is
@@ -264,7 +279,9 @@ export async function startInstallments(ctx: OrgContext, loanId: ObjectId, input
   if (!loan) throw notFound("Upad");
   if (loan.status !== "active") throw badRequest(`This upad is ${loan.status}`);
   if (loan.installmentPlan) throw badRequest("This upad already has installments");
-  const firstMonth = nextMonth(monthOf(todayIn(ctx.org.settings.timezone)));
+  // a running upad: from this month at the earliest (default next month)
+  const thisMonth = monthOf(todayIn(ctx.org.settings.timezone));
+  const firstMonth = checkStartMonth(input.startMonth ?? nextMonth(thisMonth), thisMonth);
   const plan = planForRunningUpad(loan, input.count, firstMonth);
   if (!plan) throw badRequest("Nothing of this upad is outstanding");
   const r = await c.fundLoans.updateOne(
@@ -276,15 +293,19 @@ export async function startInstallments(ctx: OrgContext, loanId: ObjectId, input
   return { ok: true, installmentPlan: plan };
 }
 
-/** Every running upad without installments → installments (the Mandal's count unless given). */
+/** Every running upad without installments → installments (the Mandal's count unless given), only upad above the Mandal's limit. */
 export async function startInstallmentsForAll(ctx: OrgContext, input: Partial<z.infer<typeof StartInstallmentsSchema>>) {
   const c = await cols();
   const count = input.count ?? ctx.org.settings.fundLoans.installments.count;
-  const loans = await c.fundLoans.find({ organizationId: ctx.orgId, status: "active", outstandingPaise: { $gt: 0 }, $or: [{ installmentPlan: null }, { installmentPlan: { $exists: false } }] }).toArray();
+  if (input.startMonth) checkStartMonth(input.startMonth, monthOf(todayIn(ctx.org.settings.timezone)));
+  const minAmountPaise = ctx.org.settings.fundLoans.installments.minAmountPaise ?? 0;
+  const loans = await c.fundLoans
+    .find({ organizationId: ctx.orgId, status: "active", outstandingPaise: { $gt: 0 }, principalPaise: { $gt: minAmountPaise }, $or: [{ installmentPlan: null }, { installmentPlan: { $exists: false } }] })
+    .toArray();
   let started = 0;
   for (const l of loans) {
     try {
-      await startInstallments(ctx, l._id, { count });
+      await startInstallments(ctx, l._id, { count, startMonth: input.startMonth });
       started++;
     } catch {
       // changed meanwhile: left as it is

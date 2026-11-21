@@ -11,6 +11,14 @@ describe("upad in fixed installments", () => {
     expect(makeInstallmentPlan(8_000_000, undefined, "2026-12")).toBeNull();
   });
 
+  it("only upad of more than the Mandal's limit gets installments", () => {
+    const limit = { enabled: true, count: 10, minAmountPaise: 5_000_000 }; // ₹50,000
+    expect(makeInstallmentPlan(5_000_000, limit, "2026-12")).toBeNull(); // exactly ₹50,000: not more
+    expect(makeInstallmentPlan(4_000_000, limit, "2026-12")).toBeNull();
+    expect(makeInstallmentPlan(5_000_100, limit, "2026-12")).not.toBeNull();
+    expect(makeInstallmentPlan(100_000, { enabled: true, count: 10, minAmountPaise: 0 }, "2026-12")).not.toBeNull();
+  });
+
   it("₹80,000 in 10: ₹8,000 a month, interest 1% on what is left (₹800, ₹720, …)", () => {
     const plan = makeInstallmentPlan(8_000_000, on, "2026-12")!;
     expect(plan).toEqual({ count: 10, amountPaise: 800_000, firstMonth: "2026-12" });

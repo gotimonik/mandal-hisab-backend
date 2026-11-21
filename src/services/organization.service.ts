@@ -130,7 +130,14 @@ export const UpdateOrgSchema = z.object({
         dueDay: z.number().int().min(1).max(28),
         allowMemberRequests: z.boolean().default(true),
         /** Absent (older app versions) = keep what is saved. */
-        installments: z.object({ enabled: z.boolean(), count: z.number().int().min(2).max(60) }).optional(),
+        installments: z
+          .object({
+            enabled: z.boolean(),
+            count: z.number().int().min(2).max(60),
+            /** installments only for upad of more than this (paise); 0 = every upad */
+            minAmountPaise: z.number().int().min(0).max(1_000_000_000_00).default(0),
+          })
+          .optional(),
       }),
       membership: z.object({ discoverable: z.boolean(), allowJoinRequests: z.boolean(), autoCreateMember: z.boolean() }),
     })

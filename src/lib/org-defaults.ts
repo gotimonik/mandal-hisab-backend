@@ -64,7 +64,7 @@ export function defaultSettings(): OrganizationSettings {
     haptaTreatment: "member_savings",
     interest: { defaultMode: "manual", monthlyRate: "1", basis: "previous_month_closing" },
     withdrawals: { allowExceptions: false },
-    fundLoans: { defaultMonthlyRate: "2", dueDay: 10, allowMemberRequests: true, installments: { enabled: false, count: 10 } },
+    fundLoans: { defaultMonthlyRate: "2", dueDay: 10, allowMemberRequests: true, installments: { enabled: false, count: 10, minAmountPaise: 0 } },
     membership: { discoverable: true, allowJoinRequests: true, autoCreateMember: true },
   };
 }

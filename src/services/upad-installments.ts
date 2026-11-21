@@ -20,9 +20,14 @@ const nextMonth = (m: string) => {
   return new Date(Date.UTC(y, mo, 1)).toISOString().slice(0, 7);
 };
 
-/** The plan for a new upad, or null when the Mandal doesn't use fixed installments. */
-export function makeInstallmentPlan(principalPaise: number, setting: { enabled: boolean; count: number } | undefined, firstMonth: string): UpadInstallmentPlan | null {
-  if (!setting?.enabled || principalPaise <= 0) return null;
+/** Whether an upad of this amount gets installments: setting on and more than the Mandal's limit. */
+export function installmentsApply(principalPaise: number, setting: { enabled: boolean; minAmountPaise?: number } | undefined) {
+  return !!setting?.enabled && principalPaise > 0 && principalPaise > (setting.minAmountPaise ?? 0);
+}
+
+/** The plan for a new upad, or null when the Mandal doesn't use fixed installments (or the upad is not above the limit). */
+export function makeInstallmentPlan(principalPaise: number, setting: { enabled: boolean; count: number; minAmountPaise?: number } | undefined, firstMonth: string): UpadInstallmentPlan | null {
+  if (!setting || !installmentsApply(principalPaise, setting)) return null;
   const count = Math.max(1, Math.floor(setting.count));
   const amountPaise = Math.ceil(principalPaise / count / 100) * 100;
   return { count, amountPaise, firstMonth };
@@ -112,7 +117,7 @@ export function installmentStatus(
 /** A plan for an upad already running: what is outstanding now, in `count` installments from `firstMonth`. */
 export function planForRunningUpad(loan: Pick<FundLoanDoc, "principalPaise" | "outstandingPaise">, count: number, firstMonth: string, now = new Date()): UpadInstallmentPlan | null {
   if (loan.outstandingPaise <= 0) return null;
-  const plan = makeInstallmentPlan(loan.outstandingPaise, { enabled: true, count }, firstMonth)!;
+  const plan = makeInstallmentPlan(loan.outstandingPaise, { enabled: true, count, minAmountPaise: 0 }, firstMonth)!;
   return { ...plan, basePaise: loan.outstandingPaise, returnedBeforePaise: loan.principalPaise - loan.outstandingPaise, startedAt: now };
 }
 

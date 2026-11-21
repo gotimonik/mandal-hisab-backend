@@ -38,7 +38,7 @@ describe("upad in fixed installments", () => {
 
   it("is off by default; old upads are returned any time", async () => {
     const org = await ok(api("GET", `/orgs/${orgId}`, { token }));
-    expect(org.settings.fundLoans.installments).toEqual({ enabled: false, count: 10 });
+    expect(org.settings.fundLoans.installments).toEqual({ enabled: false, count: 10, minAmountPaise: 0 });
     const { loan } = await ok(post("/fund-loans", { memberId: ramesh, amount: "10000", date: todayIST(), monthlyRate: "1", idempotencyKey: uniq("fl") }));
     expect(loan.installmentPlan).toBeNull();
     const detail = await get(`/fund-loans/${loan._id}`);
@@ -50,7 +50,7 @@ describe("upad in fixed installments", () => {
     await ok(settings({ defaultMonthlyRate: "1", dueDay: 10, allowMemberRequests: true, installments: { enabled: true, count: 10 } }));
     // an older app saving settings without the field keeps it on
     await ok(settings({ defaultMonthlyRate: "1", dueDay: 10, allowMemberRequests: true }));
-    expect((await ok(api("GET", `/orgs/${orgId}`, { token }))).settings.fundLoans.installments).toEqual({ enabled: true, count: 10 });
+    expect((await ok(api("GET", `/orgs/${orgId}`, { token }))).settings.fundLoans.installments).toMatchObject({ enabled: true, count: 10 });
 
     const { loan } = await ok(post("/fund-loans", { memberId: ramesh, amount: "80000", date: todayIST(), idempotencyKey: uniq("fl") }));
     expect(loan.installmentPlan).toEqual({ count: 10, amountPaise: 800_000, firstMonth: nextMonth(thisMonth()) });
@@ -83,5 +83,55 @@ describe("upad in fixed installments", () => {
     const list = await get("/fund-loans?status=active");
     const big = list.items.find((l: { principalPaise: number }) => l.principalPaise === 8_000_000);
     expect(big.installmentPlan.count).toBe(10);
+  });
+
+  it("a running upad (given before) can be put on installments: what is left, from next month", async () => {
+    const list = await get("/fund-loans?status=active");
+    const old = list.items.find((l: { principalPaise: number; installmentPlan: unknown }) => l.principalPaise === 1_000_000 && !l.installmentPlan);
+    // ₹2,000 of the ₹10,000 returned already
+    await ok(post(`/fund-loans/${old._id}/payments`, { principalAmount: "2000", date: todayIST(), idempotencyKey: uniq("flp") }));
+    const r = await ok(post(`/fund-loans/${old._id}/installments`, { count: 4 }));
+    expect(r.installmentPlan).toMatchObject({ count: 4, amountPaise: 200_000, basePaise: 800_000, returnedBeforePaise: 200_000, firstMonth: nextMonth(thisMonth()) });
+    expect((await post(`/fund-loans/${old._id}/installments`, { count: 4 })).status).toBe(400); // already has
+    const d = await get(`/fund-loans/${old._id}`);
+    expect(d.installments.rows).toHaveLength(4);
+    expect(d.installments.paidCount).toBe(0);
+    expect(d.installments.duePaise).toBe(0);
+    // returning ₹2,000 more pays the first installment
+    await ok(post(`/fund-loans/${old._id}/payments`, { principalAmount: "2000", date: todayIST(), idempotencyKey: uniq("flp") }));
+    expect((await get(`/fund-loans/${old._id}`)).installments.paidCount).toBe(1);
+    // stop → back to returning any time
+    await ok(post(`/fund-loans/${old._id}/installments/stop`, {}));
+    expect((await get(`/fund-loans/${old._id}`)).installments).toBeNull();
+    // all running upads without installments, at the Mandal's count
+    const all = await ok(post("/fund-loans/installments/start-all", {}));
+    expect(all.started).toBe(1);
+    expect((await get(`/fund-loans/${old._id}`)).installments.count).toBe(all.count);
+  });
+
+  it("with a limit, only upad of more than it gets installments", async () => {
+    await ok(settings({ defaultMonthlyRate: "1", dueDay: 10, allowMemberRequests: true, installments: { enabled: true, count: 10, minAmountPaise: 5_000_000 } }));
+    expect((await ok(api("GET", `/orgs/${orgId}`, { token }))).settings.fundLoans.installments).toEqual({ enabled: true, count: 10, minAmountPaise: 5_000_000 });
+    const small = (await ok(post("/fund-loans", { memberId: ramesh, amount: "50000", date: todayIST(), idempotencyKey: uniq("fl") }))).loan;
+    expect(small.installmentPlan).toBeNull();
+    const big = (await ok(post("/fund-loans", { memberId: ramesh, amount: "50001", date: todayIST(), idempotencyKey: uniq("fl") }))).loan;
+    expect(big.installmentPlan).toMatchObject({ count: 10 });
+    // "apply to running upads" leaves upads up to the limit alone
+    await ok(post("/fund-loans/installments/start-all", {}));
+    expect((await get(`/fund-loans/${small._id}`)).installments).toBeNull();
+  });
+
+  it("the first installment month can be chosen", async () => {
+    await ok(settings({ defaultMonthlyRate: "1", dueDay: 10, allowMemberRequests: true, installments: { enabled: true, count: 10, minAmountPaise: 0 } }));
+    const later = nextMonth(nextMonth(nextMonth(thisMonth())));
+    const { loan } = await ok(post("/fund-loans", { memberId: ramesh, amount: "10000", date: todayIST(), installmentStartMonth: later, idempotencyKey: uniq("fl") }));
+    expect(loan.installmentPlan).toMatchObject({ firstMonth: later });
+    // not before the month after it is given
+    expect((await post("/fund-loans", { memberId: ramesh, amount: "1000", date: todayIST(), installmentStartMonth: thisMonth(), idempotencyKey: uniq("fl") })).status).toBe(400);
+    // a running upad: this month at the earliest
+    await ok(post(`/fund-loans/${loan._id}/installments/stop`, {}));
+    const r = await ok(post(`/fund-loans/${loan._id}/installments`, { count: 6, startMonth: thisMonth() }));
+    expect(r.installmentPlan).toMatchObject({ count: 6, firstMonth: thisMonth() });
+    expect((await get(`/fund-loans/${loan._id}`)).installments.thisMonthPaise).toBe(166_700); // ₹10,000 / 6, rounded up to a rupee
   });
 });

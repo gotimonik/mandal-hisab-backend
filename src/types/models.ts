@@ -135,7 +135,7 @@ export interface OrganizationSettings {
     dueDay: number;
     allowMemberRequests: boolean;
     /** When on, every new upad must be returned in `count` equal monthly installments (with the interest). */
-    installments: { enabled: boolean; count: number };
+    installments: { enabled: boolean; count: number; /** only upad of more than this (paise); 0 = every upad */ minAmountPaise: number };
   };
   membership: { discoverable: boolean; allowJoinRequests: boolean; autoCreateMember: boolean };
   /** Last month the Mandal runs (YYYY-MM). No hapta is created after it. Absent/null = no end. */

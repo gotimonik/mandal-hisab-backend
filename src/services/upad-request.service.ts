@@ -123,6 +123,8 @@ export const ApproveUpadSchema = z.object({
   monthlyRate: rateString.optional(),
   date: dateOnly.optional(),
   accountId: z.string().optional(),
+  /** first installment month (YYYY-MM), when the upad gets installments */
+  installmentStartMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Use YYYY-MM").optional(),
 });
 
 /** Approve: gives the upad (same rules as "Give upad", incl. the cash check) and links it. */
@@ -140,6 +142,7 @@ export async function approveUpadRequest(ctx: OrgContext, id: ObjectId, input: z
       amount: req.amountPaise,
       date: input.date ?? todayIn(ctx.org.settings.timezone),
       monthlyRate: input.monthlyRate,
+      installmentStartMonth: input.installmentStartMonth,
       note: req.purpose ? `Requested: ${req.purpose}` : "Requested in the app",
       accountId: input.accountId,
       idempotencyKey: `upadreq:${id.toHexString()}`,
