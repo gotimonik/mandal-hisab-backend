@@ -306,7 +306,8 @@ async function ensureMemberForUser(ctx: OrgContext, membershipId: ObjectId, user
   const user = await c.users.findOne({ _id: userId });
   if (!user) return null;
   let member = await c.members.findOne({ organizationId: ctx.orgId, userId });
-  if (!member && user.email) member = await c.members.findOne({ organizationId: ctx.orgId, email: user.email, $or: [{ userId: null }, { userId: { $exists: false } }] });
+  // a record that has left the Mandal is history: never re-used
+  if (!member && user.email) member = await c.members.findOne({ organizationId: ctx.orgId, email: user.email, status: { $ne: "left" }, $or: [{ userId: null }, { userId: { $exists: false } }] });
   const { enrollInMonthlyHapta, firstOfMonth, monthOf } = await import("./monthly.service");
   const start = startMonth ?? monthOf(todayIn(ctx.org.settings.timezone));
   if (!member) member = await createMember(ctx, { name: user.name, phone: user.phone, email: user.email, joiningDate: firstOfMonth(start), enrollInMonthlyHapta: false });

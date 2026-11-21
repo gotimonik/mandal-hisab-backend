@@ -12,6 +12,7 @@ import * as receiptService from "@/services/receipt.service";
 import * as accountService from "@/services/account.service";
 import { dateOnly, optText, reason, pagination } from "@/validators/common";
 import * as membership from "@/services/membership.service";
+import * as manageOnly from "@/services/manage-only.service";
 import { formFile, LOGO_MAX_BYTES, LOGO_TOO_BIG, removeOrgLogo, uploadOrgLogo } from "@/services/upload.service";
 
 const W = { write: true } as const;
@@ -44,6 +45,10 @@ export function registerOrgRoutes(r: Router) {
     const q = req.queryAs(z.object({ status: z.enum(["pending", "active", "rejected", "deactivated"]).optional() }));
     return orgService.listMemberships(ctx, q.status);
   });
+  // an admin / manager who only looks after the Mandal: no member record of their own
+  r.get("/orgs/:orgId/me/manage-only", async (req) => manageOnly.manageOnlyStatus(await req.org("org.view")));
+  r.post("/orgs/:orgId/me/manage-only", async (req) => manageOnly.becomeManageOnly(await req.org("org.view", W), await req.body(manageOnly.ManageOnlySchema)));
+  r.post("/orgs/:orgId/me/member", async (req) => manageOnly.addMeAsMember(await req.org("memberships.manage", W), await req.body(manageOnly.AddMeBackSchema)));
   r.patch("/orgs/:orgId/memberships/:id", async (req) =>
     orgService.updateMembership(
       await req.org("memberships.manage", { write: true, allowPending: true }),
