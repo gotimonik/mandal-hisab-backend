@@ -58,7 +58,7 @@ export interface InstallmentStatus {
 /** The installment rows of a plan for a principal (amounts only). */
 export function installmentAmounts(principalPaise: number, plan: UpadInstallmentPlan) {
   const out: { sequence: number; period: string; amountPaise: number }[] = [];
-  let left = principalPaise;
+  let left = plan.basePaise ?? principalPaise;
   let period = plan.firstMonth;
   for (let k = 1; k <= plan.count && left > 0; k++) {
     const amt = k === plan.count ? left : Math.min(plan.amountPaise, left);
@@ -81,7 +81,8 @@ export function installmentStatus(
   const plan = loan.installmentPlan;
   if (!plan) return null;
   const day = String(Math.min(28, Math.max(1, opts.dueDay))).padStart(2, "0");
-  const returned = Math.max(0, opts.returnedPaise ?? loan.principalPaise - loan.outstandingPaise);
+  // a plan started on a running upad counts only what was returned after it started
+  const returned = Math.max(0, (opts.returnedPaise ?? loan.principalPaise - loan.outstandingPaise) - (plan.returnedBeforePaise ?? 0));
   let covered = returned;
   const rows: InstallmentRow[] = installmentAmounts(loan.principalPaise, plan).map((r) => {
     const paid = Math.min(covered, r.amountPaise);
@@ -106,6 +107,13 @@ export function installmentStatus(
     paidCount: rows.filter((r) => owed(r) <= 0).length,
     next: nextRow ? { sequence: nextRow.sequence, period: nextRow.period, dueDate: nextRow.dueDate, amountPaise: owed(nextRow) } : null,
   };
+}
+
+/** A plan for an upad already running: what is outstanding now, in `count` installments from `firstMonth`. */
+export function planForRunningUpad(loan: Pick<FundLoanDoc, "principalPaise" | "outstandingPaise">, count: number, firstMonth: string, now = new Date()): UpadInstallmentPlan | null {
+  if (loan.outstandingPaise <= 0) return null;
+  const plan = makeInstallmentPlan(loan.outstandingPaise, { enabled: true, count }, firstMonth)!;
+  return { ...plan, basePaise: loan.outstandingPaise, returnedBeforePaise: loan.principalPaise - loan.outstandingPaise, startedAt: now };
 }
 
 /**

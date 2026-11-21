@@ -18,7 +18,7 @@ import { rateInterest } from "./member-interest.service";
 import { lastOfMonth, monthOf } from "./monthly.service";
 import { cancelReceiptFor, issueReceipt } from "./receipt.service";
 import { notifyMember, notifyOrgMembers } from "./notification.service";
-import { installmentStatus, makeInstallmentPlan } from "./upad-installments";
+import { installmentStatus, makeInstallmentPlan, planForRunningUpad } from "./upad-installments";
 import { copy } from "./notification-copy";
 
 /**
@@ -248,6 +248,60 @@ export async function giveFundLoan(ctx: OrgContext, input: z.infer<typeof GiveLo
     }
     throw e;
   }
+}
+
+/* ------------------------------------------------------------------ installments on running upads */
+
+export const StartInstallmentsSchema = z.object({ count: z.number().int().min(2).max(60) });
+
+/**
+ * Put a running upad (given before installments were turned on) on fixed installments: what is
+ * outstanding now, in `count` equal monthly installments from next month. Interest is unchanged.
+ */
+export async function startInstallments(ctx: OrgContext, loanId: ObjectId, input: z.infer<typeof StartInstallmentsSchema>) {
+  const c = await cols();
+  const loan = await c.fundLoans.findOne({ _id: loanId, organizationId: ctx.orgId });
+  if (!loan) throw notFound("Upad");
+  if (loan.status !== "active") throw badRequest(`This upad is ${loan.status}`);
+  if (loan.installmentPlan) throw badRequest("This upad already has installments");
+  const firstMonth = nextMonth(monthOf(todayIn(ctx.org.settings.timezone)));
+  const plan = planForRunningUpad(loan, input.count, firstMonth);
+  if (!plan) throw badRequest("Nothing of this upad is outstanding");
+  const r = await c.fundLoans.updateOne(
+    { _id: loanId, organizationId: ctx.orgId, status: "active", outstandingPaise: loan.outstandingPaise, $or: [{ installmentPlan: null }, { installmentPlan: { $exists: false } }] },
+    { $set: { installmentPlan: plan, updatedAt: new Date() } },
+  );
+  if (r.modifiedCount !== 1) throw conflict("The upad changed — please try again");
+  await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "fundLoan.installments.start", entityType: "fundLoan", entityId: loanId, after: { installmentPlan: plan } });
+  return { ok: true, installmentPlan: plan };
+}
+
+/** Every running upad without installments → installments (the Mandal's count unless given). */
+export async function startInstallmentsForAll(ctx: OrgContext, input: Partial<z.infer<typeof StartInstallmentsSchema>>) {
+  const c = await cols();
+  const count = input.count ?? ctx.org.settings.fundLoans.installments.count;
+  const loans = await c.fundLoans.find({ organizationId: ctx.orgId, status: "active", outstandingPaise: { $gt: 0 }, $or: [{ installmentPlan: null }, { installmentPlan: { $exists: false } }] }).toArray();
+  let started = 0;
+  for (const l of loans) {
+    try {
+      await startInstallments(ctx, l._id, { count });
+      started++;
+    } catch {
+      // changed meanwhile: left as it is
+    }
+  }
+  return { ok: true, started, count };
+}
+
+/** Take a running upad off installments (back to returning it any time). */
+export async function stopInstallments(ctx: OrgContext, loanId: ObjectId) {
+  const c = await cols();
+  const loan = await c.fundLoans.findOne({ _id: loanId, organizationId: ctx.orgId });
+  if (!loan) throw notFound("Upad");
+  if (!loan.installmentPlan) throw badRequest("This upad has no installments");
+  await c.fundLoans.updateOne({ _id: loanId, organizationId: ctx.orgId }, { $set: { installmentPlan: null, updatedAt: new Date() } });
+  await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "fundLoan.installments.stop", entityType: "fundLoan", entityId: loanId, before: { installmentPlan: loan.installmentPlan } });
+  return { ok: true };
 }
 
 /* ------------------------------------------------------------------ interest shares */

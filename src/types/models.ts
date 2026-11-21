@@ -914,6 +914,11 @@ export interface UpadInstallmentPlan {
   count: number;
   amountPaise: number;
   firstMonth: string; // YYYY-MM
+  /** started on a running upad: the installments repay this (what was outstanding then), not the whole upad */
+  basePaise?: number;
+  /** principal already returned when the plan started (not counted towards the installments) */
+  returnedBeforePaise?: number;
+  startedAt?: Date;
 }
 
 /** One month's interest charge on a fund loan — unique (org, loan, period). */
