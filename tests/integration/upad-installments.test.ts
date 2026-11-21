@@ -134,4 +134,14 @@ describe("upad in fixed installments", () => {
     expect(r.installmentPlan).toMatchObject({ count: 6, firstMonth: thisMonth() });
     expect((await get(`/fund-loans/${loan._id}`)).installments.thisMonthPaise).toBe(166_700); // ₹10,000 / 6, rounded up to a rupee
   });
+
+  it("installments can be stopped on every running upad at once", async () => {
+    const before = (await get("/fund-loans?status=active")).items.filter((l: { installmentPlan: unknown }) => l.installmentPlan);
+    expect(before.length).toBeGreaterThan(0);
+    const r = await ok(post("/fund-loans/installments/stop-all", {}));
+    expect(r.stopped).toBe(before.length);
+    const after = (await get("/fund-loans?status=active")).items.filter((l: { installmentPlan: unknown }) => l.installmentPlan);
+    expect(after).toHaveLength(0);
+    expect((await ok(post("/fund-loans/installments/stop-all", {}))).stopped).toBe(0);
+  });
 });

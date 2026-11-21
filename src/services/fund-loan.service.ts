@@ -325,6 +325,16 @@ export async function stopInstallments(ctx: OrgContext, loanId: ObjectId) {
   return { ok: true };
 }
 
+/** Take every running upad off installments (back to returning it any time). Interest is not affected. */
+export async function stopInstallmentsForAll(ctx: OrgContext) {
+  const c = await cols();
+  const loans = await c.fundLoans.find({ organizationId: ctx.orgId, status: "active", installmentPlan: { $ne: null, $exists: true } }, { projection: { _id: 1, installmentPlan: 1 } }).toArray();
+  if (loans.length === 0) return { ok: true, stopped: 0 };
+  await c.fundLoans.updateMany({ _id: { $in: loans.map((l) => l._id) }, organizationId: ctx.orgId }, { $set: { installmentPlan: null, updatedAt: new Date() } });
+  await audit({ organizationId: ctx.orgId, actorId: ctx.user._id, action: "fundLoan.installments.stopAll", entityType: "organization", entityId: ctx.orgId, before: { loans: loans.map((l) => ({ _id: l._id, installmentPlan: l.installmentPlan })) } });
+  return { ok: true, stopped: loans.length };
+}
+
 /* ------------------------------------------------------------------ interest shares */
 
 /**

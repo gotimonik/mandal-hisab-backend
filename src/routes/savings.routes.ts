@@ -153,6 +153,7 @@ export function registerSavingsRoutes(r: Router) {
   r.post("/orgs/:orgId/members/:memberId/upad-advance/return", async (req) => ui.returnUpadAdvance(await req.org("withdrawals.record", W), parseObjectId(req.params.memberId, "Member"), await req.body(ui.ReturnAdvanceSchema)));
   r.get("/orgs/:orgId/upad-advances", async (req) => ui.advancesHeld((await req.org("members.view")).orgId));
   /* fixed installments on running upads */
+  r.post("/orgs/:orgId/fund-loans/installments/stop-all", async (req) => fl.stopInstallmentsForAll(await req.org("withdrawals.record", W)));
   r.post("/orgs/:orgId/fund-loans/installments/start-all", async (req) => fl.startInstallmentsForAll(await req.org("withdrawals.record", W), await req.body(fl.StartInstallmentsSchema.partial())));
   r.post("/orgs/:orgId/fund-loans/:id/installments", async (req) => fl.startInstallments(await req.org("withdrawals.record", W), parseObjectId(req.params.id, "Upad"), await req.body(fl.StartInstallmentsSchema)));
   r.post("/orgs/:orgId/fund-loans/:id/installments/stop", async (req) => fl.stopInstallments(await req.org("withdrawals.record", W), parseObjectId(req.params.id, "Upad")));
